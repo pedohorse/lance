@@ -8,6 +8,8 @@ import json
 import time
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+import string
+import random
 
 class SyncthingNotReadyError(RuntimeError):
 	pass
@@ -26,9 +28,13 @@ class SyncthingHandler(ServerComponent):
 
 		self._last_event_id = 0
 
-		self._generate_initial_config()
+		self.__generate_initial_config()
 		tree = ET.parse(os.path.join(self.config_root, 'config.xml'))
 		self.httpheaders = {'X-API-Key': tree.find('gui').find('apikey').text, 'Content-Type': 'application/json'}
+
+	def __getMyId(self):
+		proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-console', '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_ip, port=self.syncthing_port), '-device-id'])
+		proc.wait()
 
 	def run(self):
 		'''
@@ -58,6 +64,10 @@ class SyncthingHandler(ServerComponent):
 			dvc = ET.SubElement(conf, 'device', {'id': dev, 'compression': devices[dev].get('compression', 'metadata'), 'introducer': 'false'})
 			ET.SubElement(dvc, 'address').text = devices[dev]['address']
 			#now create control folder
+			controlfoldpath = os.path.join(self.data_root, 'control', dev)
+			rnd = random.Random()
+			fid = 'control-%s' % ''.join(rnd.choice(string.ascii_letters + string.digits) for _ in range(16))
+			ET.SubElement(conf, 'folder', {'id': fid, 'label')
 		for dev in blacklist:
 			ET.SubElement(conf, 'ignoredDevice').text = dev
 
@@ -143,7 +153,7 @@ class SyncthingHandler(ServerComponent):
 	def post(self, path, data):
 		return self.__post(path, data)
 
-	def _generate_initial_config(self):
+	def __generate_initial_config(self):
 		if self.syncthing_proc:
 			raise SyncthingNotReadyError('Syncthing must not be running!')
 
