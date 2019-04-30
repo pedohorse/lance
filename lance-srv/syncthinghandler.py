@@ -31,10 +31,11 @@ class SyncthingHandler(ServerComponent):
 		self.__generate_initial_config()
 		tree = ET.parse(os.path.join(self.config_root, 'config.xml'))
 		self.httpheaders = {'X-API-Key': tree.find('gui').find('apikey').text, 'Content-Type': 'application/json'}
+		self.__myid = self.__getMyId()
 
 	def __getMyId(self):
-		proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-console', '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_ip, port=self.syncthing_port), '-device-id'])
-		proc.wait()
+		proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-console', '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_ip, port=self.syncthing_port), '-device-id'], stdout=subprocess.PIPE)
+		return proc.communicate()
 
 	def run(self):
 		'''
@@ -65,9 +66,9 @@ class SyncthingHandler(ServerComponent):
 			ET.SubElement(dvc, 'address').text = devices[dev]['address']
 			#now create control folder
 			controlfoldpath = os.path.join(self.data_root, 'control', dev)
-			rnd = random.Random()
+			rnd = random.Random(self.__myid + dev)
 			fid = 'control-%s' % ''.join(rnd.choice(string.ascii_letters + string.digits) for _ in range(16))
-			ET.SubElement(conf, 'folder', {'id': fid, 'label')
+			ET.SubElement(conf, 'folder', {'id': fid, 'label': 'control for %s' % dev, 'path': controlfoldpath, 'type': 'sendreceive'})
 		for dev in blacklist:
 			ET.SubElement(conf, 'ignoredDevice').text = dev
 
