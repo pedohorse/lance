@@ -1,4 +1,5 @@
 import os
+import errno
 from servercomponent import ServerComponent
 import lance_utils
 from lance_utils import async
@@ -52,6 +53,26 @@ class SyncthingHandler(ServerComponent):
 						self._last_event_id = event['id']
 			time.sleep(1)
 
+	def _reanalyseConfiguration(self):
+		'''
+		reads current config file and checks if it is correct (all control folders are present, etc)
+		:return:
+		'''
+		clients = {}
+		folders = {}
+		controlfolders = {}
+		st_conffile = os.path.join(self.config_root, 'config.xml')
+		confelem = ET.parse(st_conffile).getroot()
+		for dev in confelem.findall('device'):
+			clients[dev] = {'name': dev.attrib.get('name', None), 'compression': dev.attrib.get('compression', 'metadata'), 'address': dev.find('address').text}
+
+		for fol in confelem.findall('folder'):
+			folid = fol.attrib['id']
+			if folid.startswith('control'):
+				dev
+			folders
+
+
 	@async
 	def apply_configuration(self, cfg):
 		print('applying config %s', repr(cfg))
@@ -69,6 +90,11 @@ class SyncthingHandler(ServerComponent):
 			rnd = random.Random(self.__myid + dev)
 			fid = 'control-%s' % ''.join(rnd.choice(string.ascii_letters + string.digits) for _ in range(16))
 			ET.SubElement(conf, 'folder', {'id': fid, 'label': 'control for %s' % dev, 'path': controlfoldpath, 'type': 'sendreceive'})
+			try:
+				os.makedirs(controlfoldpath)
+			except OSError as e:
+				if e.errno != errno.EEXIST:
+					raise
 		for dev in blacklist:
 			ET.SubElement(conf, 'ignoredDevice').text = dev
 
@@ -76,6 +102,11 @@ class SyncthingHandler(ServerComponent):
 			foldc = ET.SubElement(conf, 'folder', {'id': fol, 'label': folders[fol]['label'], 'path': folders[fol]['path'], 'type': folders[fol].get('type', 'sendreceive')})
 			for dev in folders[fol]['devices']:
 				ET.SubElement(foldc, 'device', {'id': dev})
+			try:
+				os.makedirs(folders[fol]['path'])
+			except OSError as e:
+				if e.errno != errno.EEXIST:
+					raise
 
 		st_conffile = os.path.join(self.config_root, 'config.xml')
 		conf_old = ET.parse(st_conffile).getroot()
