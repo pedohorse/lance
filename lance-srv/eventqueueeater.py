@@ -43,7 +43,7 @@ class EventQueueEater(ServerComponent, lance_utils.EventQueueReader):
 				if not ep.is_alive():
 					self.__eventProcessors.remove(ep)
 					continue
-				if event['type'] in ep.expected_event_types():
+				if ep.is_expected_event(event):
 					ep.add_event(event)
 			#create new processors
 			while self.__eventProcessorsAddQueue.qsize() > 0:
