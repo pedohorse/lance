@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import string
 import random
+from copy import deepcopy
 
 class SyncthingNotReadyError(RuntimeError):
 	pass
@@ -33,6 +34,8 @@ class SyncthingHandler(ServerComponent):
 		tree = ET.parse(os.path.join(self.config_root, 'config.xml'))
 		self.httpheaders = {'X-API-Key': tree.find('gui').find('apikey').text, 'Content-Type': 'application/json'}
 		self.__myid = self.__getMyId()
+		self.__inValidState = False
+		self.__reanalyseConfiguration()
 
 	def __getMyId(self):
 		proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-console', '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_ip, port=self.syncthing_port), '-device-id'], stdout=subprocess.PIPE)
@@ -53,25 +56,36 @@ class SyncthingHandler(ServerComponent):
 						self._last_event_id = event['id']
 			time.sleep(1)
 
-	def _reanalyseConfiguration(self):
+	def __reanalyseConfiguration(self):
 		'''
 		reads current config file and checks if it is correct (all control folders are present, etc)
 		:return:
 		'''
 		clients = {}
 		folders = {}
-		controlfolders = {}
-		st_conffile = os.path.join(self.config_root, 'config.xml')
-		confelem = ET.parse(st_conffile).getroot()
-		for dev in confelem.findall('device'):
-			clients[dev] = {'name': dev.attrib.get('name', None), 'compression': dev.attrib.get('compression', 'metadata'), 'address': dev.find('address').text}
+		try:
+			st_conffile = os.path.join(self.config_root, 'config.xml')
+			confelem = ET.parse(st_conffile).getroot()
+			for dev in confelem.findall('device'):
+				clients[dev.attrib['id']] = {'name': dev.attrib.get('name', None), 'compression': dev.attrib.get('compression', 'metadata'), 'address': dev.find('address').text}
 
-		for fol in confelem.findall('folder'):
-			folid = fol.attrib['id']
-			if folid.startswith('control'):
-				dev
-			folders
+			for fol in confelem.findall('folder'):
+				folid = fol.attrib['id']
+				if folid.startswith('control'):
+					cdevs = fol.findall('device')
+					if len(cdevs) != 1:
+						raise RuntimeError('bad control folder')
+					clients[cdevs[0].attrib['id']]['controlfolder'] = {'path': fol.attrib['path'], 'id': folid}
+				else:
+					folders[folid] = {'label': fol.attrib['label'], 'path': fol.attrib['path'], 'type': fol.attrib['type']}
+		except Exception:
+			self.__inValidState = False
+			return False
 
+		self.__clients = clients
+		self.__folders = folders
+		self.__inValidState = True
+		return True
 
 	@async
 	def apply_configuration(self, cfg):
@@ -130,7 +144,12 @@ class SyncthingHandler(ServerComponent):
 				f.write(conftext)
 		else:
 			self.post('/rest/system/config', conftext)
+			#TODO: looks like restart is not needed, so first check insync then restart if needed
 			self.post('/rest/system/restart', '')
+
+		self.__reanalyseConfiguration()
+		if self.syncthing_proc is not None and not self.__inValidState:
+			self.stop_syncthing()
 
 	@async
 	def start_syncthing(self):
