@@ -53,7 +53,9 @@ class EventQueueEater(ServerComponent, lance_utils.EventQueueReader):
 					self.__eventProcessorsAddQueue.task_done()
 				except Queue.Empty:
 					pass
-			self.__eventProcessors += eventprocessor.get_event_processor(self, event, self.__eventDefaultData)
+			nepr = eventprocessor.get_event_processor(self, event, self.__eventDefaultData)
+			self.__eventProcessors += nepr
+			nepr.start()  # start event processing thread
 
 			self._eventProcessed()
 

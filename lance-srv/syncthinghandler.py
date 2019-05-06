@@ -27,10 +27,12 @@ class SyncthingHandler(ServerComponent):
 		self.syncthing_ip = '127.0.0.1'
 		self.syncthing_port = 9394
 		self.syncthing_proc = None
+		self.__clients = {}
+		self.__folders = {}
 
 		self._last_event_id = 0
 
-		self.__generate_initial_config()
+		self.__generateInitialConfig()
 		tree = ET.parse(os.path.join(self.config_root, 'config.xml'))
 		self.httpheaders = {'X-API-Key': tree.find('gui').find('apikey').text, 'Content-Type': 'application/json'}
 		self.__myid = self.__getMyId()
@@ -86,6 +88,41 @@ class SyncthingHandler(ServerComponent):
 		self.__folders = folders
 		self.__inValidState = True
 		return True
+
+	def __generateInitialConfig(self):
+		if self.syncthing_proc:
+			raise SyncthingNotReadyError('Syncthing must not be running!')
+		proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-console', '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_ip, port=self.syncthing_port), '-device-id'])
+		proc.wait()
+		if proc.poll() == 0:
+			print("config already generated")
+			return
+		proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-console', '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_ip, port=self.syncthing_port), '-paused'], stdout=subprocess.PIPE)
+
+		def _killproc(proc):
+			proc.stdout.close()
+			proc.terminate()
+			time.sleep(5)
+			if proc.poll() is None:
+				proc.kill()
+				proc.join()
+		for i in xrange(100):
+			line = proc.stdout.readline()
+			if 'Default config saved' in line:
+				_killproc(proc)
+				return
+		else:
+			_killproc(proc)
+			raise lance_utils.SyncthingError('unable to generate config!')
+
+	def __del__(self):
+		self.stop_syncthing()
+
+	def get_clients(self):
+		return self.__clients
+
+	def get_folders(self):
+		return self.__folders
 
 	@async
 	def apply_configuration(self, cfg):
@@ -203,34 +240,3 @@ class SyncthingHandler(ServerComponent):
 	@async
 	def post(self, path, data):
 		return self.__post(path, data)
-
-	def __generate_initial_config(self):
-		if self.syncthing_proc:
-			raise SyncthingNotReadyError('Syncthing must not be running!')
-
-		proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-console', '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_ip, port=self.syncthing_port), '-device-id'])
-		proc.wait()
-		if proc.poll() == 0:
-			print("config already generated")
-			return
-
-		proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-console', '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_ip, port=self.syncthing_port), '-paused'], stdout=subprocess.PIPE)
-
-		def _killproc(proc):
-			proc.stdout.close()
-			proc.terminate()
-			time.sleep(5)
-			if proc.poll() is None:
-				proc.kill()
-				proc.join()
-		for i in xrange(100):
-			line = proc.stdout.readline()
-			if 'Default config saved' in line:
-				_killproc(proc)
-				return
-		else:
-			_killproc(proc)
-			raise lance_utils.SyncthingError('unable to generate config!')
-
-	def __del__(self):
-		self.stop_syncthing()

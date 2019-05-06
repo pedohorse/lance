@@ -69,6 +69,8 @@ class StoppableThread(threading.Thread):
 			self.__done = threading.Event()
 			self.__result = None
 			self.__exception = None
+			self.__callbackLock = threading.Lock()
+			self.__callback = None
 
 		# these are called from the worker thread
 		def _setException(self, ex):
@@ -77,10 +79,29 @@ class StoppableThread(threading.Thread):
 			self.__done.set()
 
 		def _setDone(self, result=None):
-			self.__result = result
-			self.__done.set()
+			with self.__callbackLock:
+				self.__result = result
+				self.__done.set()
+				try:
+					if(self.__callback is not None):
+						self.__callback(self.__result)
+				except:
+					pass
 
 		# these are called from invoker thread
+		def set_callback(self, callback):
+			'''
+			note that callback will be called by worker thread!
+			:param callback:
+			:return:
+			'''
+			with self.__callbackLock:
+				self.__callback = callback
+				# either we are before _setDone was called, or possibly after
+				# if we are after - call the callback immediately
+				if self.__callback is not None and self.__done.is_set():
+					self.__callback(self.__result)
+
 		def wait(self, timeout=None):
 			return self.__done.wait(timeout)
 
@@ -98,6 +119,7 @@ class StoppableThread(threading.Thread):
 		super(StoppableThread, self).__init__()
 		self._method_invoke_Queue = Queue.Queue()
 		self.__stopped_event = threading.Event()
+		self._methodQueueBlockTime = 0.1
 
 	def stop(self):
 		self.__stopped_event.set()
@@ -119,6 +141,14 @@ class StoppableThread(threading.Thread):
 			except Exception as e:
 				cmd[1]._setException(e)
 
+	def _runLoopLoad(self):
+		'''
+		this function will be called by default implementation of run
+		if your process is not complicated - you can only reimplement this function instead of run itself
+		:return:
+		'''
+		pass
+
 	def run(self):
 		'''
 		default implementation that just processes async methods all the time
@@ -128,8 +158,9 @@ class StoppableThread(threading.Thread):
 		:return:
 		'''
 		while not self._stopped_set():
+			self._runLoopLoad()
 			try:
-				cmd = self._method_invoke_Queue.get(True, 5)
+				cmd = self._method_invoke_Queue.get(True, self._methodQueueBlockTime)
 			except Queue.Empty:
 				continue
 			try:

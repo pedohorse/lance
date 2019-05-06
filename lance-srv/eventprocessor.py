@@ -5,11 +5,12 @@ from lance_utils import async
 class BaseEventProcessor(lance_utils.StoppableThread):
 	'''
 	Base class for all event processors
+	payload should be done in run
 	'''
 
 	def __init__(self, invoker, event=None, data=None):
 		super(BaseEventProcessor, self).__init__()
-		BaseEventProcessor.__processors[type(self).__name__] = type(self)
+		#BaseEventProcessor.__processors[type(self).__name__] = type(self)
 		self._invoker = invoker
 
 	@async
@@ -27,6 +28,7 @@ class BaseEventProcessor(lance_utils.StoppableThread):
 		actually there's a failsafe measures that autoremove finished threads, but hey, why not still being polite?
 		:return:
 		'''
+		self.stop()
 		self._invoker._event_processing_completed(self)
 
 	# Override this!
@@ -41,7 +43,7 @@ class BaseEventProcessor(lance_utils.StoppableThread):
 	# Override this!
 	def is_expected_event(self, event):
 		'''
-		Should given event be 
+		Should given event be
 		:return: True/False
 		Note that though you can dynamically change expected event types, since event processor and event supplier work in separate threads - you may miss events while changing states here
 		So better enum here all the eveens types required for all the sates of your processor, unless you do not care to miss some events
@@ -52,12 +54,21 @@ class BaseEventProcessor(lance_utils.StoppableThread):
 	def _processEvent(self, event):
 		'''
 		this function will be invoked by THIS thread from the main loop to process events
+		this will be invoked every time expected event arrives
 		override as u need
 		dont forget self._report_done()
 		:param event:
 		:return:
 		'''
 		raise NotImplementedError()
+
+	# Override this!
+	def _runLoopLoad(self):
+		'''
+		this will be executed in the loop of this event's thread
+		call self._report_done() if done, it will also stop the running thread
+		'''
+		pass
 
 
 __processors = set()

@@ -30,6 +30,8 @@ class Server(object):
 		self.eventQueueEater = EventQueueEater(self)
 		self.databaseHandler = DatabaseHandler(self, os.path.join(self.config['data_root'], 'database.sqlite3'))
 
+		self.eventQueueEater.set_default_event_data(self)  # set default data passed to new events to this server
+
 		self.databaseHandler.start()
 		self.syncthingHandler.start()
 		conf = self.databaseHandler.get_configuration().result()
