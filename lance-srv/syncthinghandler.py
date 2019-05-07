@@ -69,7 +69,7 @@ class SyncthingHandler(ServerComponent):
 			st_conffile = os.path.join(self.config_root, 'config.xml')
 			confelem = ET.parse(st_conffile).getroot()
 			for dev in confelem.findall('device'):
-				clients[dev.attrib['id']] = {'name': dev.attrib.get('name', None), 'compression': dev.attrib.get('compression', 'metadata'), 'address': dev.find('address').text}
+				clients[dev.attrib['id']] = {'id': dev.attrib['id'], 'name': dev.attrib.get('name', None), 'compression': dev.attrib.get('compression', 'metadata'), 'address': dev.find('address').text}
 
 			for fol in confelem.findall('folder'):
 				folid = fol.attrib['id']
@@ -79,7 +79,7 @@ class SyncthingHandler(ServerComponent):
 						raise RuntimeError('bad control folder')
 					clients[cdevs[0].attrib['id']]['controlfolder'] = {'path': fol.attrib['path'], 'id': folid}
 				else:
-					folders[folid] = {'label': fol.attrib['label'], 'path': fol.attrib['path'], 'type': fol.attrib['type']}
+					folders[folid] = {'id': folid, 'label': fol.attrib['label'], 'path': fol.attrib['path'], 'type': fol.attrib['type']}
 		except Exception:
 			self.__inValidState = False
 			return False

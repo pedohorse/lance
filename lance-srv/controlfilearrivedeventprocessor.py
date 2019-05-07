@@ -10,9 +10,10 @@ class ControlFileArrivedEventProcessor(BaseEventProcessor):
 		:param data: This is assumed to be Server instance
 		'''
 		super(ControlFileArrivedEventProcessor, self).__init__(invoker, event, data)
+		clients = data.syncthingHandler.get_clients()
 		self.__fid = event['data']['folder']
 		self.__file = event['data']['item']
-		self.__client = 
+		self.__client = clients
 		self.__server = data
 
 	@classmethod
