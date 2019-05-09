@@ -1,3 +1,4 @@
+import os
 from eventprocessor import BaseEventProcessor,register
 
 class ControlFileArrivedEventProcessor(BaseEventProcessor):
@@ -13,7 +14,7 @@ class ControlFileArrivedEventProcessor(BaseEventProcessor):
 		clients = data.syncthingHandler.get_clients()
 		self.__fid = event['data']['folder']
 		self.__file = event['data']['item']
-		self.__client = clients
+		self.__client = [ clients[x] for x in clients if clients[x]['controlfolder']['id'] == self.__fid][0]
 		self.__server = data
 
 	@classmethod
@@ -26,8 +27,16 @@ class ControlFileArrivedEventProcessor(BaseEventProcessor):
 		clients = data.syncthingHandler.get_clients()
 		folderids = [clients[x]['controlfolder']['id'] for x in clients]
 		try:
-			# TODO: do NOT trigger if file is a reply
-			return event['type'] == 'ItemFinished' and event['data']['folder'] in folderids and event['data']['error'] is None and event['data']['action'] == 'update'
+			bfld = ('smth', event['data']['item'])
+			while True:
+				bfld = os.path.split(bfld)
+				if bfld[0] == '':
+					bfld = bfld[1]
+					break
+				else:
+					bfld = bfld[0]
+
+			return event['type'] == 'ItemFinished' and event['data']['folder'] in folderids and  bfld == 'to_server' and event['data']['error'] is None and event['data']['action'] == 'update'
 		except:
 			return False
 
@@ -45,5 +54,4 @@ class ControlFileArrivedEventProcessor(BaseEventProcessor):
 		read command file, execute command, send back results
 		:return:
 		'''
-		clients = self.__data.syncthingHandler.get_clients()
-		filepath = clients[]
+		filepath = os.path.join(self.__client['controlfolder']['path'], self.__file)

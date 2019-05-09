@@ -53,9 +53,15 @@ class EventQueueEater(ServerComponent, lance_utils.EventQueueReader):
 					self.__eventProcessorsAddQueue.task_done()
 				except Queue.Empty:
 					pass
-			nepr = eventprocessor.get_event_processor(self, event, self.__eventDefaultData)
+			try:
+				nepr = eventprocessor.get_event_processor(self, event, self.__eventDefaultData)
+			except Exception as e:
+				print('something went wrong when creating event processor: %s' % repr(e))
 			self.__eventProcessors += nepr
-			nepr.start()  # start event processing thread
+			try:
+				nepr.start()  # start event processing thread
+			except Exception as e:
+				print('something went wrong when starting new event processor: %s' % repr(e))
 
 			self._eventProcessed()
 

@@ -143,6 +143,8 @@ class SyncthingHandler(ServerComponent):
 			ET.SubElement(conf, 'folder', {'id': fid, 'label': 'control for %s' % dev, 'path': controlfoldpath, 'type': 'sendreceive'})
 			try:
 				os.makedirs(controlfoldpath)
+				os.makedirs(os.path.join(controlfoldpath, 'to_server'))
+				os.makedirs(os.path.join(controlfoldpath, 'from_server'))
 			except OSError as e:
 				if e.errno != errno.EEXIST:
 					raise
