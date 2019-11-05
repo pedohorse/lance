@@ -1,4 +1,5 @@
 .idea
 venv
-lance-srv/config
-
+lance/config
+__pycache__
+**.pyc

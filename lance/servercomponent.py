@@ -1,4 +1,4 @@
-import lance_utils
+from . import lance_utils
 
 class ServerComponent(lance_utils.StoppableThread, lance_utils.EventQueueWriter):
 	def __init__(self, server):
