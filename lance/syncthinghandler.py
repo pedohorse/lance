@@ -20,7 +20,7 @@ from .eventtypes import *
 from . import eventprocessor
 from .logger import get_logger
 
-from typing import Union, Optional, Iterable, Set
+from typing import Union, Optional, Iterable, Set, Dict
 
 def listdir(path):
     return filter(lambda x: re.match(r'^\.syncthing\..*\.tmp$', x) is None, os.listdir(path))
@@ -38,10 +38,103 @@ class NoInitialConfiguration(RuntimeError):
     pass
 #  HELPERS
 
+
+class DeviceVolatileData:
+    # explicitly state names of methods, not use __getattr__, to help ourselves later with static code analisys
+    def __init__(self):
+        self.__data = {'addr': '',
+                       'paused': False,
+                       'connected': False,
+                       'clientName': '',
+                       'clientVersion': ''}
+
+    def _update_data(self, data):
+        self.__data.update(data)
+
+    def address(self):
+        return self.__data.get('addr', '')
+
+    def paused(self):
+        return self.__data.get('paused', False)
+
+    def connected(self):
+        return self.__data.get('connected', False)
+
+    def client_name(self):
+        return self.__data.get('clientName', '')
+
+    def client_vertion(self):
+        return self.__data.get('clientVersion', '')
+
+    def get(self, key, default):
+        return self.__data.get(key, default)
+
+
+class FolderVolatileData:
+    # explicitly state names of methods, not use __getattr__, to help ourselves later with static code analisys
+    def __init__(self):
+        self.__data = {'globalBytes': 0,
+                       'inSyncBytes': 0,
+                       'connected': False,
+                       'needBytes': 0,
+                       'needFiles': 0,
+                       'needTotalItems': 0,
+                       'state': '',
+                       'stateChanged': '',
+                       'version': 0}
+
+    def _update_data(self, data):
+        self.__data.update(data)
+
+    def global_bytes(self):
+        return self.__data.get('globalBytes', 0)
+
+    def in_sync_bytes(self):
+        return self.__data.get('inSyncBytes', 0)
+
+    def connected(self):
+        return self.__data.get('connected', False)
+
+    def need_bytes(self):
+        return self.__data.get('needBytes', 0)
+
+    def need_total_items(self):
+        return self.__data.get('needTotalItems', 0)
+
+    def state(self):
+        return self.__data.get('state', '')
+
+    def state_changed(self):
+        return self.__data.get('stateChanged', '')
+
+    def version(self):
+        return self.__data.get('version', 0)
+
+    def get(self, key, default):
+        return self.__data.get(key, default)
+
+
 class Device:
     def __init__(self, id: str, name: Optional[str] = None):
         self.__stid = id
         self.__name = name
+        self.__sthandler = None # NOT USED FOR NOW
+        self.__volatiledata = DeviceVolatileData()
+
+    def set_syncthing_handler(self, handler: Optional['SyncthingHandler']):
+        self.__sthandler = handler
+
+    def volatile_data(self):
+        return self.__volatiledata
+
+    def _update_volatile_data(self, data):
+        self.__volatiledata._update_data(data)
+
+    def force_reload_volatile_data(self):
+        if self.__sthandler is None:
+            raise RuntimeError('SyncthingHandler is not set on Device')
+        #TODO: do the reload
+        raise NotImplementedError()
 
     def id(self) -> str:
         """
@@ -55,7 +148,7 @@ class Device:
         """
         return self.__name if self.__name is not None else 'device %s' % self.__stid[:6]
 
-    def __eq__(self, other):
+    def __eq__(self, other):  # comparing all but volatile data, like connection state
         return self.__stid == other.__stid and \
                self.__name == other.__name
 
@@ -76,6 +169,23 @@ class Folder:
         self.__label = label
         self.__path = path
         self.__devices = set(devices) if devices is not None else set()
+        self.__sthandler = None  # NOT USED FOR NOW
+        self.__volatiledata = DeviceVolatileData()
+
+    def set_syncthing_handler(self, handler: Optional['SyncthingHandler']):
+        self.__sthandler = handler
+
+    def volatile_data(self):
+        return self.__volatiledata
+
+    def _update_volatile_data(self, data):
+        self.__volatiledata._update_data(data)
+
+    def force_reload_volatile_data(self):
+        if self.__sthandler is None:
+            raise RuntimeError('SyncthingHandler is not set on Folder')
+        #TODO: do the reload
+        raise NotImplementedError()
 
     def id(self) -> str:
         return self.__stfid
@@ -117,7 +227,7 @@ class Folder:
     def remove_device(self, device: str) -> None:
         self.__devices.remove(device)
 
-    def __eq__(self, other):
+    def __eq__(self, other):  # comparing all but volatile data, like connection state
         return self.__stfid == other.__stfid and \
                self.__label == other.__label and \
                self.__path == other.__path and \
@@ -142,7 +252,7 @@ class SyncthingHandler(ServerComponent):
         super(SyncthingHandler, self).__init__(server)
 
         self.__log = get_logger(self.__class__.__name__)
-        self.__log.min_log_level = 1
+        self.__log.min_log_level = 0
 
         self.syncthing_bin = r'syncthing'
         self.data_root = server.config['data_root']  # os.path.join(os.path.split(os.path.abspath(__file__))[0], r'data')
@@ -153,8 +263,8 @@ class SyncthingHandler(ServerComponent):
         self.syncthing_listenaddr = "tcp4://127.0.0.1:%d" % int(random.uniform(22000, 23000))
         self.syncthing_proc = None
         self.__servers = set()  # set of ids in __devices dict that are servers
-        self.__devices = {}  # dicts with id:Device
-        self.__folders = {}  # data folder dict:  fid:Folder
+        self.__devices = {}  # type: Dict[str, Device]
+        self.__folders = {}  # type: Dict[str, Folder]
         self.__ignoreDevices = set()  # set of devices
 
         self.__apikey = None
@@ -168,6 +278,8 @@ class SyncthingHandler(ServerComponent):
         self.__reload_configuration()
         if self.isServer():  # register special server event processors
             self.__updateClientConfigs()
+        self.__log = get_logger('%s %s' % (self.myId()[:5], self.__class__.__name__))
+        self.__log.min_log_level = 0
 
 
     def start(self):
@@ -206,11 +318,16 @@ class SyncthingHandler(ServerComponent):
                     continue
                 event = None
                 self.__log(0, "syncthing event", stevents)
+                current_session = hash(self.syncthing_proc)
                 # loop through rest events and pack them into lance events
                 if stevents is None:
                     time.sleep(2)
                     yield
                     continue
+
+                if len(stevents) > 0:
+                    self._last_event_id = max(stevents, key=lambda x: x['id'])['id']
+
                 for stevent in stevents:
                     # filter and pack events into our wrapper
                     if stevent['type'] == 'ItemFinished':
@@ -228,11 +345,30 @@ class SyncthingHandler(ServerComponent):
                         if data['summary']['needTotalItems'] == 0:
                             self.__reload_configuration()
 
+                    # Folder Statue event
+                    if stevent['type'] == 'FolderSummary':
+                        fid = stevent['data']['folder']
+                        if fid in self.__folders:
+                            self.__folders[fid]._update_volatile_data(stevent['data'])
+                            self.__log(1, repr(self.__folders[fid].volatile_data()))
+
+                    # Device Status event
+                    elif stevent['type'] == 'DeviceConnected':
+                        did = stevent['data']['id']
+                        if did in self.__devices:
+                            self.__devices[did]._update_volatile_data(stevent['data'])
+                            self.__devices[did]._update_volatile_data({'connected': True, 'error': None})
+                            self.__log(1, repr(self.__devices[did].volatile_data()))
+                    elif stevent['type'] == 'DeviceDisconnected':
+                        did = stevent['data']['id']
+                        if did in self.__devices:
+                            self.__devices[did]._update_volatile_data(stevent['data'])
+                            self.__devices[did]._update_volatile_data({'connected': False})
+                            self.__log(1, repr(self.__devices[did].volatile_data()))
+
                     if event is not None:
                         self._enqueueEvent(event)
 
-                    if self._last_event_id < stevent['id']:
-                        self._last_event_id = stevent['id']
             time.sleep(1)
             yield
 
@@ -342,6 +478,41 @@ class SyncthingHandler(ServerComponent):
         return self.__interface_addFolder(folderPath, label, devList)
 
     @async_method
+    def addDeviceToFolder(self, fid, did):
+        if not self.isServer():
+            raise RuntimeError('device list is provided by server')
+        if did not in self.__devices:
+            raise RuntimeError('device %s does not belong to this server' % did)
+        if fid not in self.__folders:
+            raise RuntimeError('folder %s does not belong to this server' % did)
+        self.__log(1, "adding %s to %s that has %s" % (did, fid, repr(self.__folders[fid].devices())))
+        if did not in self.__folders[fid].devices():
+            self.__log(1, 'adding')
+            self.__folders[fid].add_device(did)
+            self.__save_configuration()
+            self.__log(1, "config saved %s" % repr(self.__folders[fid].devices()))
+            self.__save_st_config()
+            for dev in self.__folders[fid].devices():
+                self.__save_device_configuration(dev)
+
+    @async_method
+    def removeDeviceFromFolder(self, fid, did):
+        if did not in self.__devices:
+            raise RuntimeError('device %s does not belong to this server' % did)
+        if fid not in self.__folders:
+            raise RuntimeError('folder %s does not belong to this server' % did)
+        self.__log(1, "removing %s from %s that has %s" % (did, fid, repr(self.__folders[fid].devices())))
+        if did in self.__folders[fid].devices():
+            self.__log(1, 'removing')
+            self.__folders[fid].remove_device(did)
+            self.__save_configuration()
+            self.__log(1, "config saved %s" % repr(self.__folders[fid].devices()))
+            self.__save_st_config()
+            for dev in self.__folders[fid].devices():
+                self.__save_device_configuration(dev)
+            self.__save_device_configuration(did)
+
+    @async_method
     def setServerSecret(self, secret):
         assert isinstance(secret, str), 'secret must be a str'
         self.__server_secret = secret
@@ -378,6 +549,8 @@ class SyncthingHandler(ServerComponent):
                 self.__save_device_configuration(dev)
 
     def __interface_addFolder(self, folderPath, label, devList=None):
+        if not self.isServer():
+            raise RuntimeError('device list is provided by server')
         if devList is None:
             devList = []
         assert isinstance(label, str), 'label must be string'
@@ -397,9 +570,8 @@ class SyncthingHandler(ServerComponent):
 
         self.__save_configuration()
         self.__save_st_config()
-        if self.isServer():
-            for dev in devList:
-                self.__save_device_configuration(dev)
+        for dev in devList:
+            self.__save_device_configuration(dev)
         return fid
 
     def __reload_configuration(self):
@@ -499,10 +671,25 @@ class SyncthingHandler(ServerComponent):
             #TODO: save local json config, just servers, all else should be empty
 
         configChanged = configChanged or oldservers != self.__servers or olddevices != self.__devices or oldfolders != self.__folders or oldignoredevices != self.__ignoreDevices
+        if not self.isServer():  # for client - if we have folders removed - those folders must be deleted immediately
+            for fid in oldfolders:
+                if fid in self.__folders:
+                    continue
+                fpath = oldfolders[fid].path()
+                if fpath is None:
+                    continue
+                try:
+                    if '.stfolder' in os.listdir(fpath):  # just sanity check
+                        shutil.rmtree(fpath, ignore_errors=True)
+                        self.__log(1, 'removed folder %s as server closed access to it' % fpath)
+                    else:
+                        self.__log(4, 'could not find .stfolder in what should be a synced folder: %s' % fpath)
+                except Exception as e:
+                    self.__log(5, 'unexpected error occured: %s' % repr(e))
 
         self.__configInSync = True
         if configChanged:
-            print('state changed, resaving st config')
+            self.__log(1, 'state changed, resaving st config')
             self.__save_st_config()
             if self.isServer():
                 for dev in self.__devices:
@@ -758,6 +945,7 @@ class SyncthingHandler(ServerComponent):
             self.__stop_syncthing()
         with open(st_conffile, 'w') as f:
             f.write(conftext)
+        self.__log(1, conftext)
         if dorestartst:
             self.__start_syncthing()
         #TODO: IMPROVE: its faster to get-modify-post config, but that config is in json format, and file is in xml... ffs
@@ -767,6 +955,7 @@ class SyncthingHandler(ServerComponent):
 
     def __start_syncthing(self):
         if not self.syncthing_proc or self.syncthing_proc.poll() is not None:
+            self._last_event_id = 0
             self.syncthing_proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_ip, port=self.syncthing_port)])
             return True
         return False
@@ -783,7 +972,7 @@ class SyncthingHandler(ServerComponent):
         return self.syncthing_proc is not None and self.syncthing_proc.poll() is None
 
     def __get(self, path, **kwargs):
-        if self.syncthing_proc is None:
+        if self.syncthing_proc is None or self.syncthing_proc.poll() is not None:
             raise SyncthingNotReadyError()
         url = "http://%s:%d%s" % (self.syncthing_ip, self.syncthing_port, path)
         if len(kwargs) > 0:
@@ -791,17 +980,36 @@ class SyncthingHandler(ServerComponent):
         self.__log(0, "getting %s" % url)
         self.__log(0, self.httpheaders)
         req = requester.Request(url, headers=self.httpheaders)
-        rep = requester.urlopen(req)
+        for _ in range(32):  # 32 attempts
+            try:
+                rep = requester.urlopen(req)
+                break
+            except requester.URLError as e:  # assume syncthing is not yet ready
+                if self.syncthing_proc.poll() is not None:
+                    raise SyncthingNotReadyError()
+                time.sleep(1)
+        else:
+            raise SyncthingNotReadyError()
         data = json.loads(rep.read())
         return data
 
     def __post(self, path, data):
-        if self.syncthing_proc is None:
+        if self.syncthing_proc is None or self.syncthing_proc.poll() is not None:
             raise SyncthingNotReadyError()
-        req = requester.Request("http://%s:%d%s" % (self.syncthing_ip, self.syncthing_port, path), data, headers=self.httpheaders)
+        req = requester.Request("http://%s:%d%s" % (self.syncthing_ip, self.syncthing_port, path), json.dumps(data).encode('utf-8'), headers=self.httpheaders)
         req.get_method = lambda: 'POST'
-        rep = requester.urlopen(req)
-        return json.loads(rep.read())
+        for _ in range(32):  # 32 attempts
+            try:
+                rep = requester.urlopen(req)
+                break
+            except requester.URLError as e:  # assume syncthing is not yet ready
+                if self.syncthing_proc.poll() is not None:
+                    raise SyncthingNotReadyError()
+                time.sleep(1)
+
+        else:
+            raise SyncthingNotReadyError()
+        return None  # json.loads(rep.read())
 
     @async_method
     def get(self, path, **kwargs):
