@@ -69,6 +69,12 @@ class DeviceVolatileData:
     def get(self, key, default):
         return self.__data.get(key, default)
 
+    def keys(self):
+        return self.__data.keys()
+
+    def __len__(self):
+        return len(self.__data)
+
 
 class FolderVolatileData:
     # explicitly state names of methods, not use __getattr__, to help ourselves later with static code analisys
@@ -112,6 +118,12 @@ class FolderVolatileData:
 
     def get(self, key, default):
         return self.__data.get(key, default)
+
+    def keys(self):
+        return self.__data.keys()
+
+    def __len__(self):
+        return len(self.__data)
 
 
 class Device:
@@ -232,6 +244,24 @@ class Folder:
                self.__label == other.__label and \
                self.__path == other.__path and \
                self.__devices == other.__devices
+
+# Events
+class DeviceAddedEvent(BaseEvent):
+    def __init__(self, device: Device):
+        super(DeviceAddedEvent, self).__init__()
+        self.__device = device
+
+    def device(self):
+        return self.__device
+
+
+class DeviceRemovedEvent(BaseEvent):
+    def __init__(self, device: Device):
+        super(DeviceRemovedEvent, self).__init__()
+        self.__device = device
+
+    def device(self):
+        return self.__device
 
 
 #  MAIN GUY

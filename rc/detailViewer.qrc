@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="ui">
+    <file>detailViewer.ui</file>
+  </qresource>
+</RCC>

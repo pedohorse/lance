@@ -38,3 +38,5 @@ class ControlEvent(SyncthingEvent):
 
 class FolderStatusEvent(SyncthingEvent):
     pass
+
+
