@@ -15,6 +15,7 @@ class EventQueueEater(ServerComponent, lance_utils.EventQueueReader):
         # note that there's no _processAsyncMethods cuz we do not have async methods
         # if this class gets any async methods - we'll have to implement double queue waiting...
         while not self._stopped_set():
+            yield
             try:
                 event = self._dequeueEvent(block=True, timeout=10)
             except queue.Empty:
@@ -41,11 +42,13 @@ class EventQueueEater(ServerComponent, lance_utils.EventQueueReader):
             # create new processors
             while self.__eventProcessorsAddQueue.qsize() > 0:
                 try:
-                    eventproc_type, event, data = self.__eventProcessorsAddQueue.get_nowait()
-                    newEventProcessor = eventproc_type(self, event, data)
+                    #eventproc_type, event, data = self.__eventProcessorsAddQueue.get_nowait()
+                    #newEventProcessor = eventproc_type(self, event, data)
+                    newEventProcessor = self.__eventProcessorsAddQueue.get_nowait()
                     self.__eventProcessors.append(newEventProcessor)
                     self.__eventProcessorsAddQueue.task_done()
-                    newEventProcessor.start()
+                    if not newEventProcessor.is_alive():
+                        newEventProcessor.start()
                 except queue.Empty:
                     pass
             try:
@@ -58,8 +61,8 @@ class EventQueueEater(ServerComponent, lance_utils.EventQueueReader):
 
             self._eventProcessed()
 
-    def add_event_processor(self, eventprocessor_type, event=None, data=None):
-        self.__eventProcessorsAddQueue.put((eventprocessor_type, event, data))
+    def add_event_processor(self, eventprocessor):
+        self.__eventProcessorsAddQueue.put(eventprocessor)
 
     def remove_event_provessor(self, eventprocessor):
         self.__eventProcessorsRemoveQueue.put(eventprocessor)
