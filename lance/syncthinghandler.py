@@ -245,23 +245,33 @@ class Folder:
                self.__path == other.__path and \
                self.__devices == other.__devices
 
+
 # Events
-class DeviceAddedEvent(BaseEvent):
-    def __init__(self, device: Device):
-        super(DeviceAddedEvent, self).__init__()
-        self.__device = device
+class ConfigurationEvent(BaseEvent):
+    def __init__(self, source: str):
+        super(ConfigurationEvent, self).__init__()
+        self.__source = source
 
-    def device(self):
-        return self.__device
+    def  source(self):
+        return self.__source
 
 
-class DeviceRemovedEvent(BaseEvent):
-    def __init__(self, device: Device):
-        super(DeviceRemovedEvent, self).__init__()
-        self.__device = device
+class DevicesAddedEvent(ConfigurationEvent):
+    def __init__(self, devices: Iterable[Device], source: str):
+        super(DevicesAddedEvent, self).__init__(source)
+        self.__devices = tuple(devices)
 
-    def device(self):
-        return self.__device
+    def devices(self):
+        return self.__devices
+
+
+class DevicesRemovedEvent(ConfigurationEvent):
+    def __init__(self, devices: Iterable[Device], source: str):
+        super(DevicesRemovedEvent, self).__init__(source)
+        self.__devices = tuple(devices)
+
+    def devices(self):
+        return self.__devices
 
 
 #  MAIN GUY
@@ -716,6 +726,14 @@ class SyncthingHandler(ServerComponent):
                         self.__log(4, 'could not find .stfolder in what should be a synced folder: %s' % fpath)
                 except Exception as e:
                     self.__log(5, 'unexpected error occured: %s' % repr(e))
+
+        if olddevices != self.__devices:
+            devicesadded = [y for x, y in self.__devices.items() if x not in olddevices]
+            devicesremoved = [y for x, y in olddevices if x not in self.__devices.items()]
+            if len(devicesadded) > 0:
+                self._enqueueEvent(DevicesAddedEvent(devicesadded, 'reload_configuration'))
+            if len(devicesremoved) > 0:
+                self._enqueueEvent(DevicesRemovedEvent(devicesremoved, 'reload_configuration'))
 
         self.__configInSync = True
         if configChanged:
