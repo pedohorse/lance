@@ -1,6 +1,7 @@
 from .rc import detailViewer_ui
 
 import lance.syncthinghandler as sth
+import lance.server as lserver
 from PySide2.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide2.QtWidgets import QWidget
 from typing import Dict, Optional, List
@@ -60,3 +61,12 @@ class DetailViewer(QWidget):
 
         self.__deviceModel = DeviceModel(self)
         self.ui.deviceTreeView.setModel(self.__deviceModel)
+
+        self.__server = None
+
+    def set_server(self, server: lserver.Server):
+        if self.__server is not None:
+            pass
+        self.__server = server
+        if self.__server is not None:
+            self.__server.eventQueueEater.add_event_processor()
