@@ -9,16 +9,32 @@ class BadEventProcessorEvent(RuntimeError):
         self.event = event
 
 
-class BaseEventProcessor(lance_utils.StoppableThread):
+class BaseEventProcessorInterface:
+    def __init__(self):
+        super(BaseEventProcessorInterface, self).__init__()
+    """
+    minimum base methods required for an event processor
+    WARNING !!! ALL THESE METHODS WILL BE CALLED FROM A DIFFERENT THREAD! SO IT"S UP TO YOU TO MAKE IT RIGHT
+    If you need a simple event processing - use BaseEventProcessor class instead
+    """
+    def add_event(self, event):
+        raise NotImplementedError()
+
+    @classmethod
+    def is_init_event(cls, event):
+        raise NotImplementedError()
+
+    def is_expected_event(self, event):
+        raise NotImplementedError()
+
+
+class BaseEventProcessor(BaseEventProcessorInterface, lance_utils.StoppableThread):
     """
     Base class for all event processors
     payload should be done in run
     """
-
-    def __init__(self, invoker, event=None):
+    def __init__(self):
         super(BaseEventProcessor, self).__init__()
-        # BaseEventProcessor.__processors[type(self).__name__] = type(self)
-        self._invoker = invoker
 
     @async_method
     def add_event(self, event):
@@ -30,15 +46,6 @@ class BaseEventProcessor(lance_utils.StoppableThread):
         if not self.is_expected_event(event):
             raise BadEventProcessorEvent(event)
         self._processEvent(event)
-
-    def _report_done(self):
-        """
-        you must call this when your handler finishes.
-        actually there's a failsafe measures that autoremove finished threads, but hey, why not still being polite?
-        :return:
-        """
-        self.stop()
-        self._invoker._event_processing_completed(self)
 
     # Override this!
     @classmethod
@@ -65,7 +72,6 @@ class BaseEventProcessor(lance_utils.StoppableThread):
         this function will be invoked by THIS thread from the main loop to process new events
         this will be invoked every time expected event arrives
         override as u need
-        dont forget self._report_done()
         :param event:
         :return:
         """
