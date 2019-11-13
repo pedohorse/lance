@@ -256,22 +256,29 @@ class ConfigurationEvent(BaseEvent):
         return self.__source
 
 
-class DevicesAddedEvent(ConfigurationEvent):
+class DevicesConfigurationEvent(ConfigurationEvent):
     def __init__(self, devices: Iterable[Device], source: str):
-        super(DevicesAddedEvent, self).__init__(source)
+        super(DevicesConfigurationEvent, self).__init__(source)
         self.__devices = tuple(devices)
 
     def devices(self):
         return self.__devices
 
 
-class DevicesRemovedEvent(ConfigurationEvent):
-    def __init__(self, devices: Iterable[Device], source: str):
-        super(DevicesRemovedEvent, self).__init__(source)
-        self.__devices = tuple(devices)
+class DevicesAddedEvent(DevicesConfigurationEvent):
+    pass
 
-    def devices(self):
-        return self.__devices
+
+class DevicesRemovedEvent(DevicesConfigurationEvent):
+    pass
+
+
+class DevicesChangedEvent(DevicesConfigurationEvent):
+    pass
+
+
+class DevicesVolatileDataChangedEvent(DevicesConfigurationEvent):
+    pass
 
 
 #  MAIN GUY
@@ -732,8 +739,10 @@ class SyncthingHandler(ServerComponent):
             devicesremoved = [y for x, y in olddevices if x not in self.__devices.items()]
             if len(devicesadded) > 0:
                 self._enqueueEvent(DevicesAddedEvent(devicesadded, 'reload_configuration'))
+                self.__log(1, 'devicesadded event enqueued %s' % repr(devicesadded))
             if len(devicesremoved) > 0:
                 self._enqueueEvent(DevicesRemovedEvent(devicesremoved, 'reload_configuration'))
+                self.__log(1, 'devicesremoved event enqueued %s' % repr(devicesremoved))
 
         self.__configInSync = True
         if configChanged:
