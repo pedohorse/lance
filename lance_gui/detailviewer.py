@@ -2,11 +2,49 @@ from .rc import detailViewer_ui
 
 import lance.syncthinghandler as sth
 import lance.server as lserver
-from PySide2.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PySide2.QtWidgets import QWidget
+import lance.eventprocessor as levent
+from PySide2.QtCore import QObject, QAbstractTableModel, QModelIndex, Qt, Signal, Slot
+from PySide2.QtWidgets import QWidget, QMainWindow
 from typing import Dict, Optional, List
 
 
+class DeviceEventCatcher(levent.BaseEventProcessorInterface, QObject):
+    event_arrived = Signal(object)
+    _intermediete_event_arrived = Signal(object)
+
+    def __init__(self):
+        super(DeviceEventCatcher, self).__init__()
+        self._intermediete_event_arrived.connect(self._intermediete_event_arrived_slot, Qt.QueuedConnection)
+
+    @classmethod
+    def is_init_event(cls, event):
+        """
+        WILL BE INVOKED BY QUEUE THREAD
+        """
+        return False
+
+    def add_event(self, event):
+        """
+        WILL BE INVOKED BY QUEUE THREAD
+        """
+        self._intermediete_event_arrived.emit(event)
+
+    def is_expected_event(self, event):
+        """
+        WILL BE INVOKED BY QUEUE THREAD
+        """
+        print("WOOOOOOOO %s" % event)
+        return isinstance(event, sth.DevicesConfigurationEvent)
+
+    @Slot(object)
+    def _intermediete_event_arrived_slot(self, event):
+        """
+         now this is supposed to be called from main QT thread
+        """
+        self.event_arrived.emit(event)
+
+
+# DATA MODEL
 class DeviceModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super(DeviceModel, self).__init__(parent)
@@ -52,7 +90,7 @@ class DeviceModel(QAbstractTableModel):
         return None
 
 
-class DetailViewer(QWidget):
+class DetailViewer(QMainWindow):
     def __init__(self, parent=None):
         super(DetailViewer, self).__init__(parent)
 
@@ -62,11 +100,18 @@ class DetailViewer(QWidget):
         self.__deviceModel = DeviceModel(self)
         self.ui.deviceTreeView.setModel(self.__deviceModel)
 
+        self.__eventCatched = DeviceEventCatcher()
+        self.__eventCatched.event_arrived.connect(self.process_event)
+
         self.__server = None
 
     def set_server(self, server: lserver.Server):
         if self.__server is not None:
-            pass
+            self.__server.eventQueueEater.remove_event_provessor(self.__eventCatched)
         self.__server = server
         if self.__server is not None:
-            self.__server.eventQueueEater.add_event_processor()
+            self.__server.eventQueueEater.add_event_processor(self.__eventCatched)
+
+    @Slot(object)
+    def process_event(self, event):
+        print('all is good', event)
