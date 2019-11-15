@@ -66,7 +66,7 @@ class DeviceVolatileData:
     def client_vertion(self):
         return self.__data.get('clientVersion', '')
 
-    def get(self, key, default):
+    def get(self, key, default=None):
         return self.__data.get(key, default)
 
     def keys(self):
@@ -377,6 +377,7 @@ class SyncthingHandler(ServerComponent):
 
                 for stevent in stevents:
                     # filter and pack events into our wrapper
+                    self.__log(1, 'event type "%s"' % stevent['type'])
                     if stevent['type'] == 'ItemFinished':
                         data = stevent['data']
                         if data['folder'] in self.get_config_folder().fid():
@@ -406,15 +407,25 @@ class SyncthingHandler(ServerComponent):
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__devices[did]._update_volatile_data({'connected': True, 'error': None})
                             self.__log(1, repr(self.__devices[did].volatile_data()))
+                            event = DevicesVolatileDataChangedEvent((self.__devices[did],))
                     elif stevent['type'] == 'DeviceDisconnected':
                         did = stevent['data']['id']
                         if did in self.__devices:
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__devices[did]._update_volatile_data({'connected': False})
                             self.__log(1, repr(self.__devices[did].volatile_data()))
+                            event = DevicesVolatileDataChangedEvent((self.__devices[did],))
+                    elif stevent['type'] == 'DeviceDiscovered':
+                        did = stevent['data']['device']
+                        if did in self.__devices:
+                            self.__devices[did]._update_volatile_data(stevent['data'])
+                            self.__log(1, repr(self.__devices[did].volatile_data()))
+                            event = DevicesVolatileDataChangedEvent((self.__devices[did],))
 
                     if event is not None:
+                        self.__log(1, "sending event %s" % repr(event))
                         self._enqueueEvent(event)
+
 
             time.sleep(1)
             yield
@@ -470,17 +481,9 @@ class SyncthingHandler(ServerComponent):
     def __del__(self):
         self.__stop_syncthing()
 
-    def get_devices(self):
-        return self.__devices  # TODO: make immutable
-
-    # def get_config_path(self):
-    #     if self.isServer():
-    #         return os.path.join(self.data_root, 'server', 'configuration')
-    #     else:
-    #         return os.path.join(self.data_root, 'control', self.myId())
-
     def get_config_folder(self, devid=None):
         """
+        TODO: Document this - is it outside inderface? is it only for internal work?
         get control folder of a client if server and device is given
         get server config folder if server and device is None
         else return client's control folder
@@ -506,11 +509,19 @@ class SyncthingHandler(ServerComponent):
                                               )
         #return self.__devices[device].get('controlfolder', None)
 
-    def get_servers(self):
-        return self.__servers
+    # INTERFACE
+    # note: all getters are doing copy to avoid race conditions
+    @async_method
+    def get_devices(self):
+        return copy.deepcopy(self.__devices)
 
+    @async_method
+    def get_servers(self):
+        return copy.deepcopy(self.__servers)
+
+    @async_method
     def get_folders(self):
-        return self.__folders
+        return copy.deepcopy(self.__folders)
 
     @async_method
     def addServer(self, deviceid):
@@ -569,6 +580,7 @@ class SyncthingHandler(ServerComponent):
     @async_method
     def reload_configuration(self):
         return self.__reload_configuration()
+    # END INTERFACE
 
     def __interface_addDevice(self, deviceid):
         if not self.isServer():
@@ -735,14 +747,17 @@ class SyncthingHandler(ServerComponent):
                     self.__log(5, 'unexpected error occured: %s' % repr(e))
 
         if olddevices != self.__devices:
-            devicesadded = [y for x, y in self.__devices.items() if x not in olddevices]
-            devicesremoved = [y for x, y in olddevices if x not in self.__devices.items()]
+            devicesadded = [copy.deepcopy(y) for x, y in self.__devices.items() if x not in olddevices]
+            devicesremoved = [copy.deepcopy(y) for x, y in olddevices if x not in self.__devices]
+            devicesupdated = [copy.deepcopy(y) for x, y in olddevices if x in self.__devices and y != self.__devices[x]]
             if len(devicesadded) > 0:
                 self._enqueueEvent(DevicesAddedEvent(devicesadded, 'reload_configuration'))
                 self.__log(1, 'devicesadded event enqueued %s' % repr(devicesadded))
             if len(devicesremoved) > 0:
                 self._enqueueEvent(DevicesRemovedEvent(devicesremoved, 'reload_configuration'))
                 self.__log(1, 'devicesremoved event enqueued %s' % repr(devicesremoved))
+            if len(devicesupdated) > 0:
+                self._enqueueEvent(DevicesChangedEvent(devicesupdated, 'reload_configuration'))
 
         self.__configInSync = True
         if configChanged:
