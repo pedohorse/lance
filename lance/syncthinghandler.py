@@ -407,20 +407,20 @@ class SyncthingHandler(ServerComponent):
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__devices[did]._update_volatile_data({'connected': True, 'error': None})
                             self.__log(1, repr(self.__devices[did].volatile_data()))
-                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),))
+                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event')
                     elif stevent['type'] == 'DeviceDisconnected':
                         did = stevent['data']['id']
                         if did in self.__devices:
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__devices[did]._update_volatile_data({'connected': False})
                             self.__log(1, repr(self.__devices[did].volatile_data()))
-                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did],)))
+                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event')
                     elif stevent['type'] == 'DeviceDiscovered':
                         did = stevent['data']['device']
                         if did in self.__devices:
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__log(1, repr(self.__devices[did].volatile_data()))
-                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did],)))
+                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event')
 
                     if event is not None:
                         self.__log(1, "sending event %s" % repr(event))
@@ -748,8 +748,8 @@ class SyncthingHandler(ServerComponent):
 
         if olddevices != self.__devices:
             devicesadded = [copy.deepcopy(y) for x, y in self.__devices.items() if x not in olddevices]
-            devicesremoved = [copy.deepcopy(y) for x, y in olddevices if x not in self.__devices]
-            devicesupdated = [copy.deepcopy(y) for x, y in olddevices if x in self.__devices and y != self.__devices[x]]
+            devicesremoved = [copy.deepcopy(y) for x, y in olddevices.items() if x not in self.__devices]
+            devicesupdated = [copy.deepcopy(y) for x, y in olddevices.items() if x in self.__devices and y != self.__devices[x]]
             if len(devicesadded) > 0:
                 self._enqueueEvent(DevicesAddedEvent(devicesadded, 'reload_configuration'))
                 self.__log(1, 'devicesadded event enqueued %s' % repr(devicesadded))
@@ -1062,7 +1062,7 @@ class SyncthingHandler(ServerComponent):
                 time.sleep(1)
         else:
             raise SyncthingNotReadyError()
-        data = json.loads(rep.read())
+        data = json.loads(rep.read().decode('utf-8'))
         return data
 
     def __post(self, path, data):
