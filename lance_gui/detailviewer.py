@@ -8,12 +8,13 @@ from PySide2.QtWidgets import QWidget, QMainWindow
 from typing import Dict, Optional, List
 
 
-class DeviceEventCatcher(levent.BaseEventProcessorInterface, QObject):
+class ServerEventCatcher(levent.BaseEventProcessorInterface, QObject):
     event_arrived = Signal(object)
     _intermediete_event_arrived = Signal(object)
 
-    def __init__(self):
-        super(DeviceEventCatcher, self).__init__()
+    def __init__(self, event_type_list: Iterable):
+        super(ServerEventCatcher, self).__init__()
+        self.__event_types = tuple(event_type_list)
         self._intermediete_event_arrived.connect(self._intermediete_event_arrived_slot, Qt.QueuedConnection)
 
     @classmethod
@@ -33,9 +34,11 @@ class DeviceEventCatcher(levent.BaseEventProcessorInterface, QObject):
         """
         WILL BE INVOKED BY QUEUE THREAD
         """
-        return isinstance(event, sth.DevicesConfigurationEvent)
+        for eventtype in self.__event_types:
+            if isinstance(event, eventtype):
+                return True
+        return False
 
-    @Slot(object)
     def _intermediete_event_arrived_slot(self, event):
         """
          now this is supposed to be called from main QT thread
@@ -205,7 +208,7 @@ class DetailViewer(QMainWindow):
         self.__deviceModel = DeviceModel(self)
         self.ui.deviceTreeView.setModel(self.__deviceModel)
 
-        self.__eventCatched = DeviceEventCatcher()
+        self.__eventCatched = ServerEventCatcher([sth.DevicesConfigurationEvent])
         self.__eventCatched.event_arrived.connect(self.process_event)
 
         self.__server = None
