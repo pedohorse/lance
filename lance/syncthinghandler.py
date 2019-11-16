@@ -407,20 +407,20 @@ class SyncthingHandler(ServerComponent):
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__devices[did]._update_volatile_data({'connected': True, 'error': None})
                             self.__log(1, repr(self.__devices[did].volatile_data()))
-                            event = DevicesVolatileDataChangedEvent((self.__devices[did],))
+                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),))
                     elif stevent['type'] == 'DeviceDisconnected':
                         did = stevent['data']['id']
                         if did in self.__devices:
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__devices[did]._update_volatile_data({'connected': False})
                             self.__log(1, repr(self.__devices[did].volatile_data()))
-                            event = DevicesVolatileDataChangedEvent((self.__devices[did],))
+                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did],)))
                     elif stevent['type'] == 'DeviceDiscovered':
                         did = stevent['data']['device']
                         if did in self.__devices:
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__log(1, repr(self.__devices[did].volatile_data()))
-                            event = DevicesVolatileDataChangedEvent((self.__devices[did],))
+                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did],)))
 
                     if event is not None:
                         self.__log(1, "sending event %s" % repr(event))
