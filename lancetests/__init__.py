@@ -20,8 +20,8 @@ def rescanTests():
 		try:
 			newmodule = importlib.import_module(".".join((__name__, fn)))
 			importlib.reload(newmodule)
-		except:
-			print("failed to loade test file %s" % fn)
+		except Exception as e:
+			print("failed to loade test file %s: %s" % (fn, repr(e)))
 			continue
 		testModuleList.append(newmodule)
 		for name, obj in inspect.getmembers(newmodule):
