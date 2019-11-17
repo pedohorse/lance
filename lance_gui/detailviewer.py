@@ -3,9 +3,9 @@ from .rc import detailViewer_ui
 import lance.syncthinghandler as sth
 import lance.server as lserver
 import lance.eventprocessor as levent
-from PySide2.QtCore import QObject, QAbstractItemModel, QAbstractTableModel, QModelIndex, Qt, Signal, Slot
+from PySide2.QtCore import QObject, QAbstractItemModel, QMutex, QModelIndex, Qt, Signal, Slot
 from PySide2.QtWidgets import QWidget, QMainWindow
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Iterable, Union
 
 
 class ServerEventCatcher(levent.BaseEventProcessorInterface, QObject):
@@ -47,7 +47,7 @@ class ServerEventCatcher(levent.BaseEventProcessorInterface, QObject):
 
 
 # DATA MODEL
-class DeviceModel(QAbstractItemModel):
+class DeviceFolderModel_Base(QAbstractItemModel):
     class TreeElement:
         def __init__(self, data, parent=None):
             self.__children = []
@@ -90,65 +90,80 @@ class DeviceModel(QAbstractItemModel):
             if parent is not None:
                 parent.__children.append(self)  # it can not be there already cuz we ensure parent-child consistency here
 
-    def __init__(self, parent=None):
-        super(DeviceModel, self).__init__(parent)
-        self.__rootitem = DeviceModel.TreeElement(None)
-        #self.__devices = {}  # type: Dict[str, sth.Device]
-        #self.__keyorder = []  # type: List[str]
-        #self.__cache = {}  # This exists baiscally purely to prevent GC from freeing objects still tracked by QT
+    def __init__(self, elemkeymethod: Optional[str], elemvalmethod: Optional[str] = None, mainkeys: Optional[List[str]] = None, parent=None):
+        super(DeviceFolderModel_Base, self).__init__(parent)
+        self.__rootitem = DeviceFolderModel_Base.TreeElement(None)
+        if mainkeys is None:
+            mainkeys = []
+        self.__mainkeys = mainkeys
+        self.__elemkeymethod = elemkeymethod
+        self.__elemvalmethod = elemvalmethod
 
-    def add_device(self, device: sth.Device) -> None:
+    def _createItem(self, parent: 'DeviceFolderModel_Base.TreeElement', key: str, val):
+        if isinstance(val, set) or isinstance(val, tuple) or isinstance(val, list):
+            item = DeviceFolderModel_Base.TreeElement((key, ''))
+            parent.addChild(item)
+            for subval in val:
+                self._createItem(item, '', subval)
+        else:
+            parent.addChild(DeviceFolderModel_Base.TreeElement((key, val)))
+
+    def add_element(self, element: Union[sth.Device, sth.Folder]) -> None:
         """
         TODO: is device volatile? for now assume it is, but not rely on it
         TODO: IT MUST NOT BE VOLATILE (CONNECTED TO SERVER), OR WE MEET RACE CONDITIONS!!
-        :param device:
+        :param element:
         :return:
         """
-        if len([x for x in self.__rootitem.children() if x.data() == device]):
+        if len([x for x in self.__rootitem.children() if x.data().id() == element.id()]):
             return
         self.beginInsertRows(QModelIndex(), len(self.__rootitem.children()), len(self.__rootitem.children()))
-        devitem = DeviceModel.TreeElement(device)
+        devitem = DeviceFolderModel_Base.TreeElement(element)
         self.__rootitem.addChild(devitem)
-        devitem.addChild(DeviceModel.TreeElement(('id', device.id())))
-        devitem.addChild(DeviceModel.TreeElement(('name', device.name())))
-        for key in device.volatile_data().keys():
-            devitem.addChild(DeviceModel.TreeElement((key, device.volatile_data().get(key))))
+        for key in self.__mainkeys:
+            self._createItem(devitem, key, getattr(element, key)())
+            #devitem.addChild(DeviceFolderModel_Base.TreeElement((key, getattr(element, key)())))
+        for key in element.volatile_data().keys():
+            self._createItem(devitem, key, element.volatile_data().get(key))
+            #devitem.addChild(DeviceFolderModel_Base.TreeElement((key, element.volatile_data().get(key))))
         self.endInsertRows()
 
-    def remove_device(self, device):
+    def remove_element(self, element: Union[sth.Device, sth.Folder]):
         todel = []
         for i, x in enumerate(self.__rootitem.children()):
-            if x.data() == device:
+            if x.data().id() == element.id():
                 todel.insert(0, i)
         for i in todel:
             self.beginRemoveRows(QModelIndex(), i, i)
             del self.__rootitem.children()[i]
             self.endRemoveRows()
 
-    def clear_devices(self):
+    def clear_elements(self):
         self.beginResetModel()
-        self.__rootitem = DeviceModel.TreeElement(None)
+        self.__rootitem = DeviceFolderModel_Base.TreeElement(None)
         self.endResetModel()
 
-    def update_device(self, device: sth.Device):
+    def update_element(self, element: Union[sth.Device, sth.Folder]):
         """
-        :param device: a device with id already in model, all other data except id will be updated
+        :param element: a device with id already in model, all other data except id will be updated
         :return:
         """
-        items = [x for x in self.__rootitem.children() if x.data() == device]
+        items = [x for x in self.__rootitem.children() if x.data().id() == element.id()]
         for item in items:
             dmodelindex = self.index(self.__rootitem.children().index(item), 0, QModelIndex())  # yes i could have got that row together with items list, but i'm not in a hurry here
 
             self.beginRemoveRows(dmodelindex, 0, len(item.children())-1)
-            item.setData(device)
+            item.setData(element)
             item.clearChildren()
             self.endRemoveRows()
 
-            self.beginInsertRows(dmodelindex, 0, 2 + len(device.volatile_data().keys()))
-            item.addChild(DeviceModel.TreeElement(('id', device.id())))
-            item.addChild(DeviceModel.TreeElement(('name', device.name())))
-            for key in device.volatile_data().keys():
-                item.addChild(DeviceModel.TreeElement((key, device.volatile_data().get(key))))
+            self.beginInsertRows(dmodelindex, 0, len(self.__mainkeys) + len(element.volatile_data().keys()))
+            for key in self.__mainkeys:
+                self._createItem(item, key, getattr(element, key)())
+                #item.addChild(DeviceFolderModel_Base.TreeElement((key, getattr(element, key)())))
+            for key in element.volatile_data().keys():
+                self._createItem(item, key, element.volatile_data().get(key))
+                #item.addChild(DeviceFolderModel_Base.TreeElement((key, element.volatile_data().get(key))))
             self.endInsertRows()
 
     #QAbstractItemMode stuff
@@ -156,7 +171,7 @@ class DeviceModel(QAbstractItemModel):
         if not parentindex.isValid():
             item = self.__rootitem
         else:
-            item = parentindex.internalPointer()  # type: DeviceModel.TreeElement
+            item = parentindex.internalPointer()  # type: DeviceFolderModel_Base.TreeElement
         return len(item.children())
 
     def columnCount(self, parentindex: QModelIndex) -> int:
@@ -166,13 +181,13 @@ class DeviceModel(QAbstractItemModel):
         if not parentindex.isValid():
             item = self.__rootitem
         else:
-            item = parentindex.internalPointer()  # type: DeviceModel.TreeElement
+            item = parentindex.internalPointer()  # type: DeviceFolderModel_Base.TreeElement
         return self.createIndex(row, column, item.children()[row])
 
     def parent(self, index: QModelIndex) -> QModelIndex:
         if not index.isValid():
             return QModelIndex()
-        item = index.internalPointer()  # type: DeviceModel.TreeElement
+        item = index.internalPointer()  # type: DeviceFolderModel_Base.TreeElement
         if item.parent() == self.__rootitem:
             return QModelIndex()
         return self.createIndex(item.parent().parent().children().index(item.parent()), 0, item.parent())
@@ -182,20 +197,30 @@ class DeviceModel(QAbstractItemModel):
             return None
         if role != Qt.DisplayRole:
             return None
-        item = index.internalPointer()  # type: DeviceModel.TreeElement
+        item = index.internalPointer()  # type: DeviceFolderModel_Base.TreeElement
         data = item.data()
         col = index.column()
-        if isinstance(data, sth.Device):
-            if col == 0:
-                return data.name()
-            else:
-                return data.id()
+        if item.parent() == self.__rootitem:
+            if col == 0 and self.__elemkeymethod is not None:
+                return getattr(data, self.__elemkeymethod)()
+            elif col == 1 and self.__elemvalmethod is not None:
+                return getattr(data, self.__elemvalmethod)()
+            return None
         # otherwise data is Tuple[str, SomeShit]
         key, val = data
         if col == 0:
             return key
         return val
 
+
+class DeviceModel(DeviceFolderModel_Base):
+    def __init__(self, parent=None):
+        super(DeviceModel, self).__init__('name', None, ['name', 'id'], parent=parent)
+
+
+class FolderModel(DeviceFolderModel_Base):
+    def __init__(self, parent=None):
+        super(FolderModel, self).__init__('label', None, ['label', 'path', 'id', 'devices'], parent=parent)
 
 
 class DetailViewer(QMainWindow):
@@ -206,22 +231,35 @@ class DetailViewer(QMainWindow):
         self.ui.setupUi(self)
 
         self.__deviceModel = DeviceModel(self)
+        self.__folderModel = FolderModel(self)
         self.ui.deviceTreeView.setModel(self.__deviceModel)
+        self.ui.folderTreeView.setModel(self.__folderModel)
 
-        self.__eventCatched = ServerEventCatcher([sth.DevicesConfigurationEvent])
-        self.__eventCatched.event_arrived.connect(self.process_event)
+        self.__deviceEventCatched = ServerEventCatcher([sth.DevicesConfigurationEvent])
+        self.__deviceEventCatched.event_arrived.connect(self.process_event)
+        self.__folderEventCatched = ServerEventCatcher([sth.FoldersConfigurationEvent])
+        self.__folderEventCatched.event_arrived.connect(self.process_event)
 
+        self.__setterMutex = QMutex()
         self.__server = None
 
     def set_server(self, server: lserver.Server):
-        if self.__server is not None:
-            self.__server.eventQueueEater.remove_event_provessor(self.__eventCatched)
-            self.__deviceModel.clear_devices()
-        self.__server = server
-        if self.__server is not None:
-            for devid, device in self.__server.syncthingHandler.get_devices().result().items():
-                self.__deviceModel.add_device(device)
-            self.__server.eventQueueEater.add_event_processor(self.__eventCatched)
+        self.__setterMutex.lock()
+        try:
+            if self.__server is not None:
+                self.__server.eventQueueEater.remove_event_provessor(self.__deviceEventCatched)
+                self.__server.eventQueueEater.remove_event_provessor(self.__folderEventCatched)
+                self.__deviceModel.clear_elements()
+            self.__server = server
+            if self.__server is not None:
+                for devid, device in self.__server.syncthingHandler.get_devices().result().items():
+                    self.__deviceModel.add_element(device)
+                for fid, folder in self.__server.syncthingHandler.get_folders().result().items():
+                    self.__folderModel.add_element(folder)
+                self.__server.eventQueueEater.add_event_processor(self.__deviceEventCatched)
+                self.__server.eventQueueEater.add_event_processor(self.__folderEventCatched)
+        finally:
+            self.__setterMutex.unlock()
 
     @Slot(object)
     def process_event(self, event):
@@ -233,10 +271,20 @@ class DetailViewer(QMainWindow):
         print('all is good', event)
         if isinstance(event, sth.DevicesAddedEvent):
             for device in event.devices():
-                self.__deviceModel.add_device(device)
+                self.__deviceModel.add_element(device)
         elif isinstance(event, sth.DevicesRemovedEvent):
             for device in event.devices():
-                self.__deviceModel.remove_device(device)
+                self.__deviceModel.remove_element(device)
         elif isinstance(event, sth.DevicesChangedEvent) or isinstance(event, sth.DevicesVolatileDataChangedEvent):
             for device in event.devices():
-                self.__deviceModel.update_device(device)
+                self.__deviceModel.update_element(device)
+
+        elif isinstance(event, sth.FoldersAddedEvent):
+            for folder in event.folders():
+                self.__folderModel.add_element(folder)
+        elif isinstance(event, sth.FoldersRemovedEvent):
+            for folder in event.folders():
+                self.__folderModel.remove_element(folder)
+        elif isinstance(event, sth.FoldersChangedEvent) or isinstance(event, sth.FoldersVolatileDataChangedEvent):
+            for folder in event.folders():
+                self.__folderModel.update_element(folder)
