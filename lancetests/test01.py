@@ -31,23 +31,23 @@ class AddRemoveFoldersTest(TestBase):
                     if e.errno != errno.EEXIST:
                         raise
 
-            self.cl0.syncthingHandler.setServerSecret('wowsecret2').result()
-            self.cl1.syncthingHandler.setServerSecret('wowsecret2').result()
-            self.cl2.syncthingHandler.setServerSecret('wowsecret2').result()
-            self.srv.syncthingHandler.setServerSecret('wowsecret2').result()
+            self.cl0.syncthingHandler.set_server_secret('wowsecret2').result()
+            self.cl1.syncthingHandler.set_server_secret('wowsecret2').result()
+            self.cl2.syncthingHandler.set_server_secret('wowsecret2').result()
+            self.srv.syncthingHandler.set_server_secret('wowsecret2').result()
 
-            self.srv.syncthingHandler.addServer(srvid).result()
-            self.srv.syncthingHandler.addDevice(cl0id).result()
-            self.srv.syncthingHandler.addDevice(cl1id).result()
-            self.srv.syncthingHandler.addDevice(cl2id).result()
+            self.srv.syncthingHandler.add_server(srvid).result()
+            self.srv.syncthingHandler.add_device(cl0id).result()
+            self.srv.syncthingHandler.add_device(cl1id).result()
+            self.srv.syncthingHandler.add_device(cl2id).result()
             ###
-            self.cl0.syncthingHandler.addServer(srvid).result()
-            self.cl1.syncthingHandler.addServer(srvid).result()
-            self.cl2.syncthingHandler.addServer(srvid).result()
+            self.cl0.syncthingHandler.add_server(srvid).result()
+            self.cl1.syncthingHandler.add_server(srvid).result()
+            self.cl2.syncthingHandler.add_server(srvid).result()
 
-            fidA = self.srv.syncthingHandler.addFolder(fpath0s, 'folder_A', [cl0id]).result()
-            fidB = self.srv.syncthingHandler.addFolder(fpath1s, 'folder_B', [cl1id]).result()
-            fidC = self.srv.syncthingHandler.addFolder(fpath2s, 'folder_C', [cl2id]).result()
+            fidA = self.srv.syncthingHandler.add_folder(fpath0s, 'folder_A', [cl0id]).result()
+            fidB = self.srv.syncthingHandler.add_folder(fpath1s, 'folder_B', [cl1id]).result()
+            fidC = self.srv.syncthingHandler.add_folder(fpath2s, 'folder_C', [cl2id]).result()
 
             for i in range(3):
                 self.srv.start()
@@ -82,13 +82,13 @@ class AddRemoveFoldersTest(TestBase):
                 with open(os.path.join(self.test_root_path(), 'cl2', 'data', 'folder_C', 'f2_test.txt'), 'r') as f:
                     assert ss2 == f.read(), 'c2 folder 2 contents mismatch. test failed. \n%s' % s2
 
-                self.srv.syncthingHandler.removeDeviceFromFolder(fidA, cl0id).result()
-                self.srv.syncthingHandler.removeDeviceFromFolder(fidB, cl1id).result()
-                self.srv.syncthingHandler.removeDeviceFromFolder(fidC, cl2id).result()
+                self.srv.syncthingHandler.remove_device_from_folder(fidA, cl0id).result()
+                self.srv.syncthingHandler.remove_device_from_folder(fidB, cl1id).result()
+                self.srv.syncthingHandler.remove_device_from_folder(fidC, cl2id).result()
 
-                self.srv.syncthingHandler.addDeviceToFolder(fidA, cl1id).result()
-                self.srv.syncthingHandler.addDeviceToFolder(fidB, cl2id).result()
-                self.srv.syncthingHandler.addDeviceToFolder(fidC, cl0id).result()
+                self.srv.syncthingHandler.add_device_to_folder(fidA, cl1id).result()
+                self.srv.syncthingHandler.add_device_to_folder(fidB, cl2id).result()
+                self.srv.syncthingHandler.add_device_to_folder(fidC, cl0id).result()
 
                 time.sleep(35)
 
@@ -116,13 +116,13 @@ class AddRemoveFoldersTest(TestBase):
                 self.cl1 = Server(os.path.join(self.test_root_path(), 'cl1', 'config'), os.path.join(self.test_root_path(), 'cl1', 'data'))
                 self.cl2 = Server(os.path.join(self.test_root_path(), 'cl2', 'config'), os.path.join(self.test_root_path(), 'cl2', 'data'))
 
-                self.srv.syncthingHandler.removeDeviceFromFolder(fidA, cl1id).result()
-                self.srv.syncthingHandler.removeDeviceFromFolder(fidB, cl2id).result()
-                self.srv.syncthingHandler.removeDeviceFromFolder(fidC, cl0id).result()
+                self.srv.syncthingHandler.remove_device_from_folder(fidA, cl1id).result()
+                self.srv.syncthingHandler.remove_device_from_folder(fidB, cl2id).result()
+                self.srv.syncthingHandler.remove_device_from_folder(fidC, cl0id).result()
 
-                self.srv.syncthingHandler.addDeviceToFolder(fidA, cl0id).result()
-                self.srv.syncthingHandler.addDeviceToFolder(fidB, cl1id).result()
-                self.srv.syncthingHandler.addDeviceToFolder(fidC, cl2id).result()
+                self.srv.syncthingHandler.add_device_to_folder(fidA, cl0id).result()
+                self.srv.syncthingHandler.add_device_to_folder(fidB, cl1id).result()
+                self.srv.syncthingHandler.add_device_to_folder(fidC, cl2id).result()
         finally:
             try:
                 self.cl0.stop()

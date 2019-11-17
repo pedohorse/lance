@@ -26,18 +26,18 @@ class BasicTest0(TestBase):
                     if e.errno != errno.EEXIST:
                         raise
 
-            self.cl0.syncthingHandler.setServerSecret('wowsecret').result()
-            self.cl1.syncthingHandler.setServerSecret('wowsecret').result()
-            self.srv.syncthingHandler.setServerSecret('wowsecret').result()
+            self.cl0.syncthingHandler.set_server_secret('wowsecret').result()
+            self.cl1.syncthingHandler.set_server_secret('wowsecret').result()
+            self.srv.syncthingHandler.set_server_secret('wowsecret').result()
 
-            self.srv.syncthingHandler.addServer(self.srv.syncthingHandler.myId()).result()
-            self.srv.syncthingHandler.addDevice(self.cl0.syncthingHandler.myId()).result()
-            self.srv.syncthingHandler.addDevice(self.cl1.syncthingHandler.myId()).result()
-            self.cl0.syncthingHandler.addServer(self.srv.syncthingHandler.myId()).result()
-            self.cl1.syncthingHandler.addServer(self.srv.syncthingHandler.myId()).result()
+            self.srv.syncthingHandler.add_server(self.srv.syncthingHandler.myId()).result()
+            self.srv.syncthingHandler.add_device(self.cl0.syncthingHandler.myId()).result()
+            self.srv.syncthingHandler.add_device(self.cl1.syncthingHandler.myId()).result()
+            self.cl0.syncthingHandler.add_server(self.srv.syncthingHandler.myId()).result()
+            self.cl1.syncthingHandler.add_server(self.srv.syncthingHandler.myId()).result()
 
-            self.srv.syncthingHandler.addFolder(fpath0s, 'le folder 0', [self.cl0.syncthingHandler.myId()]).result()
-            self.srv.syncthingHandler.addFolder(fpath1s, 'la foldero 1', [self.cl1.syncthingHandler.myId()]).result()
+            self.srv.syncthingHandler.add_folder(fpath0s, 'le folder 0', [self.cl0.syncthingHandler.myId()]).result()
+            self.srv.syncthingHandler.add_folder(fpath1s, 'la foldero 1', [self.cl1.syncthingHandler.myId()]).result()
 
             for i in range(3):
                 self.srv.start()
