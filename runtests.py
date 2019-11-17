@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
 
+import sys
 import traceback
 import lancetests
 import time
+import re
 
 
 if __name__ == '__main__':
     results = {}
+    filterre = None
+    if len(sys.argv) > 1:
+        try:
+            filterre = re.compile(sys.argv[1])
+        except Exception as e:
+            print('bad regexp: %s' % repr(e))
+            sys.exit(1)
     for TestClass in lancetests.testClassList:
+        if filterre is not None and filterre.match(TestClass.__name__) is None:
+            continue
         #if TestClass.__name__ != 'AddRemoveFoldersTest':continue
         _starttime = time.time()
         try:
