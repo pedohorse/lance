@@ -1,6 +1,7 @@
 
 from .servercomponent import ServerComponent
 from .lance_utils import async_method
+from .logger import get_logger
 
 from . import syncthinghandler
 
@@ -10,20 +11,27 @@ from typing import Dict
 class ConfigurationInconsistentError(RuntimeError):
     pass
 
+log = get_logger('ProjectManager')
 
 class ShotPart:
     def __init__(self, stfolder: syncthinghandler.Folder):
-        self.__stfolder = stfolder  # Note - this is not a LIVE version of the Folder - just a copy with latest reported changes
-        assert '__ProjectManager_data__' in self.__stfolder.metadata() and 'type' in self.__stfolder.metadata()['__ProjectManager_data__']  and self.__stfolder.metadata()['__ProjectManager_data__']['type'] == 'shot', 'bad folder metadata'
         self.__usersids = set()
         self.__project = None
-        self._parseFolder()
+        self.__shot = None
+        self.__stfolder = None
+        self.update_folder(stfolder)
 
     def _parseFolder(self):
         prjmeta = self.__stfolder.metadata()['__ProjectManager_data__']
-        self.__usersids = set(prjmeta['users'])
         self.__project = prjmeta['project']
+        self.__shot = prjmeta['shot']
 
+    def update_folder(self, stfolder: syncthinghandler.Folder):
+        if self.__stfolder is not None and self.__stfolder.id() != stfolder.id():
+            log(2, 'ShotPart::update_folder: new folder id differs from existing one')
+        self.__stfolder = stfolder  # Note - this is not a LIVE version of the Folder - just a copy with latest reported changes
+        assert '__ProjectManager_data__' in self.__stfolder.metadata() and 'type' in self.__stfolder.metadata()['__ProjectManager_data__'] and self.__stfolder.metadata()['__ProjectManager_data__']['type'] == 'shot', 'bad folder metadata'
+        self._parseFolder()
 
 class User:
     def __init__(self, mdata):
