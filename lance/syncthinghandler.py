@@ -200,11 +200,25 @@ class Folder:
         self.__devices = set(devices) if devices is not None else set()
         self.__sthandler = sthandler
         self.__volatiledata = DeviceVolatileData()
+        self.__metadata = {}
+
+    def _setMetadata(self, metadata):
+        """
+        supposed to be called from SyncthingHandler
+        DOES NOT updates syncthinghandler itself
+        """
+        self.__metadata = copy.deepcopy(metadata)
+
+    def metadata(self):
+        """
+        this is supposed to be immutable,
+        """
+        return self.__metadata
 
     def volatile_data(self):
         return self.__volatiledata
 
-    def _update_volatile_data(self, data):
+    def _updateVolatileData(self, data):
         self.__volatiledata._update_data(data)
 
     def force_reload_volatile_data(self):
@@ -222,8 +236,9 @@ class Folder:
     def path(self) -> Optional[str]:
         return self.__path
 
-    def set_path(self, path: Optional[str], move_contents=True) -> None:
+    def _setPath(self, path: Optional[str], move_contents=True) -> None:
         """
+        supposed to be called from SyncthingHandler
         sets path for the folder to be synced into
         if move_contents is True - contents of existing folder will be moved to the new location
         :param path:
@@ -257,16 +272,19 @@ class Folder:
         return self.__stfid == other.__stfid and \
                self.__label == other.__label and \
                self.__path == other.__path and \
-               self.__devices == other.__devices
+               self.__devices == other.__devices and \
+               self.__metadata == other.__metadata
 
     def __deepcopy__(self, memodict=None):
         newone = copy.copy(self)
+        newone.__metadata = copy.deepcopy(self.__metadata)
         newone.__volatiledata = copy.deepcopy(self.__volatiledata, memo=memodict)
         newone.__devices = copy.deepcopy(self.__devices, memo=memodict)  # deepcopy of devices
         return newone
 
     def __copy__(self):
         newone = Folder(self.__sthandler, self.__stfid, self.__label, self.__path, self.__devices)  # devices will be same but in a new set
+        newone.__metadata = copy.copy(self.__metadata)
         newone.__volatiledata = self.__volatiledata
         return newone
 
@@ -447,7 +465,7 @@ class SyncthingHandler(ServerComponent):
                     if stevent['type'] == 'FolderSummary':
                         fid = stevent['data']['folder']
                         if fid in self.__folders:
-                            self.__folders[fid]._update_volatile_data(stevent['data'])
+                            self.__folders[fid]._updateVolatileData(stevent['data'])
                             self.__log(1, repr(self.__folders[fid].volatile_data()))
                             event = FoldersVolatileDataChangedEvent((copy.deepcopy(self.__folders[fid]),), 'syncthing::event')
 
@@ -734,6 +752,8 @@ class SyncthingHandler(ServerComponent):
         if self.__server_secret is None:
             self.__isValidState = False
             raise SyncthingHandlerConfigError()
+        __debug_olddevices = copy.copy(self.__devices)
+        __debug_oldfolders = copy.copy(self.__folders)
         oldservers = self.__servers
         olddevices = self.__devices
         oldfolders = self.__folders
@@ -765,7 +785,14 @@ class SyncthingHandler(ServerComponent):
             for dev in listdir(os.path.join(configFoldPath, 'devices')):
                 with open(os.path.join(configFoldPath, 'devices', dev), 'r') as f:
                     fdata = json.load(f)
-                self.__devices[dev] = Device(self, dev, fdata.get('name', None))
+                newdevice = Device(self, dev, fdata.get('name', None))
+
+                if dev in olddevices:
+                    olddevice = olddevices[dev]
+                    olddevices[dev] = copy.copy(olddevice)  # we will modify old device, so we need to keep old copy for future comparison
+                    olddevice.__dict__.update(newdevice.__dict__)
+                    newdevice = olddevice
+                self.__devices[dev] = newdevice
                 #if isServer:
                 #    self.__devices[dev]['controlfolder'] = {'fid': 'control-%s' % hashlib.sha1((':'.join([self.__server_secret, dev])).encode('UTF-8')).hexdigest(),
                 #                                            'path': os.path.join(self.data_root, 'control', dev)
@@ -782,17 +809,27 @@ class SyncthingHandler(ServerComponent):
             for fid in listdir(os.path.join(configFoldPath, 'folders')):
                 with open(os.path.join(configFoldPath, 'folders', fid, 'attribs'), 'r') as f:
                     fattrs = json.load(f)
-                self.__folders[fid] = Folder(self, fid, fattrs['label'], config.get('folders', {}).get(fid, {}).get('attribs', {}).get('path', None))  # TODO: if path changed suddenly and st noticed it - it will give error about missing .stfolder. We have to deal with this one way or another
+                newfolder = Folder(self, fid, fattrs['label'], config.get('folders', {}).get(fid, {}).get('attribs', {}).get('path', None))  # TODO: if path changed suddenly and st noticed it - it will give error about missing .stfolder. We have to deal with this one way or another
                 for dev in listdir(os.path.join(configFoldPath, 'folders', fid, 'devices')):
                     if dev not in self.__devices:
                         self.__log(4, 'folder device %s is not part of device list. skipping...' % dev)
                         continue
-                    self.__folders[fid].add_device(dev)
+                    newfolder.add_device(dev)
+                with open(os.path.join(configFoldPath, 'folders', fid, 'metadata'), 'r') as f:
+                    fmeta = json.load(f)
+                newfolder._setMetadata(fmeta)
 
-                if self.__folders[fid].path() is None:
+                if newfolder.path() is None:
                     # TODO: add an option to control this, allow folders to stay without path
                     # TODO: ensure path does not exist already
-                    self.__folders[fid].set_path(os.path.join(self.data_root, self.__folders[fid].label()))
+                    newfolder._setPath(os.path.join(self.data_root, newfolder.label()))
+
+                if fid in oldfolders:
+                    oldfolder = oldfolders[fid]
+                    oldfolders[fid] = copy.copy(oldfolder)
+                    oldfolder.__dict__.update(newfolder.__dict__)
+                    newfolder = oldfolder
+                self.__folders[fid] = newfolder
 
             self.__ignoreDevices = set()
             for dev in listdir(os.path.join(configFoldPath, 'ignoredevices')):
@@ -841,6 +878,9 @@ class SyncthingHandler(ServerComponent):
             if len(devicesupdated) > 0:
                 self._enqueueEvent(DevicesChangedEvent(devicesupdated, 'reload_configuration'))
                 self.__log(1, 'devicesupdated event enqueued %s' % repr(devicesupdated))
+            #check
+            for dev in devicesupdated:
+                assert dev is __debug_olddevices[dev.id()], 'modified device is not the same object'
         if oldfolders != self.__folders:
             foldersadded = [copy.deepcopy(y) for x, y in self.__folders.items() if x not in olddevices]
             foldersremoved = [copy.deepcopy(y) for x, y in oldfolders.items() if x not in self.__folders]
@@ -854,6 +894,9 @@ class SyncthingHandler(ServerComponent):
             if len(foldersupdated) > 0:
                 self._enqueueEvent(FoldersChangedEvent(foldersupdated, 'reload_configuration'))
                 self.__log(1, 'foldersupdated event enqueued %s' % repr(foldersupdated))
+            # check
+            for fld in foldersupdated:
+                assert fld is __debug_oldfolders[fld.id()], 'modified device is not the same object'
         # /events sent
         return configChanged
 
@@ -903,6 +946,8 @@ class SyncthingHandler(ServerComponent):
                 os.mknod(os.path.join(fiddevpath, dev))
             with open(os.path.join(_fldpath, fid, 'attribs'), 'w') as f:
                 json.dump({'fid': fid, 'label': self.__folders[fid].label()}, f)
+            with open(os.path.join(_fldpath, fid, 'metadata'), 'w') as f:
+                json.dump(self.__folders[fid].metadata(), f)
         # save ign dev
         for dev in self.__ignoreDevices:
             os.mknod(os.path.join(_ignpath, dev))
@@ -981,6 +1026,8 @@ class SyncthingHandler(ServerComponent):
                     os.mknod(os.path.join(fiddevpath, dev))
                 with open(os.path.join(_fldpath, fid, 'attribs'), 'w') as f:
                     json.dump({'fid': fid, 'label': self.__folders[fid].label()}, f)
+                with open(os.path.join(_fldpath, fid, 'metadata'), 'w') as f:
+                    json.dump(self.__folders[fid].metadata(), f)
             # save ign dev
             for dev in self.__ignoreDevices:
                 os.mknod(os.path.join(_ignpath, dev))
