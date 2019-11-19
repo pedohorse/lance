@@ -10,7 +10,7 @@ def get_logger(name):
         if level >= printer.min_log_level:
             print("%s :: %s" % (name.upper(), ', '.join(map(repr, args))))
 
-    printer.min_log_level = 3
+    printer.min_log_level = 2
     _loggercache[name] = printer
     return printer
 
