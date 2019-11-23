@@ -1,5 +1,12 @@
 import os
 
+try:
+    import simplejson as json
+except ImportError:
+    import json
+
+import copy
+
 from .servercomponent import ServerComponent
 from .lance_utils import async_method
 from .logger import get_logger
@@ -21,12 +28,17 @@ class ShotPart:
         self.__project = None  # type: Optional[str]
         self.__shot = None  # type: Optional[str]
         self.__stfolder = None  # type: Optional[syncthinghandler.Folder]
+        self.__id = None  # type: Optional[str]
         self.update_folder(stfolder)
 
     def _parseFolder(self):
         prjmeta = self.__stfolder.metadata()['__ProjectManager_data__']
         self.__project = prjmeta['project']
         self.__shot = prjmeta['shot']
+        self.__id = self.__stfolder.id()
+
+    def id(self):
+        return self.__id
 
     def project(self):
         return self.__project
@@ -38,6 +50,18 @@ class ShotPart:
         if self.__usersids_tuple is None:
             self.__usersids_tuple = tuple(self.__usersids)
         return self.__usersids_tuple
+
+    def add_user(self, user_id: str):
+        if user_id in self.__usersids:
+            return
+        self.__usersids.add(user_id)
+        self.__usersids_tuple = None
+
+    def remove_user(self, user_id: str):
+        if user_id not in self.__usersids:
+            return
+        self.__usersids.remove(user_id)
+        self.__usersids_tuple = None
 
     def set_users(self, user_ids: Iterable):
         if self.__usersids == user_ids:
@@ -126,6 +150,7 @@ class ProjectManager(ServerComponent):
         oldusers = self.__users
         self.__shots = {}
         self.__users = {}
+        allshotparts = {}  # type: Dict[str, ShotPart]
 
         # load project folders
         for fid, folder in folders.items():
@@ -140,6 +165,7 @@ class ProjectManager(ServerComponent):
                 self.__projectSettingsFolder = folder
             elif pm_metadata['type'] == 'shotpart':
                 shotpart = ShotPart(folder)
+                allshotparts[shotpart.id()] = shotpart
                 shotid = pm_metadata['shot']
                 if shotid not in self.__shots:
                     self.__shots[shotid] = set()
@@ -151,12 +177,31 @@ class ProjectManager(ServerComponent):
         for username in users:
             devids = os.listdir(os.path.join(configpath, 'users', username, 'devices'))
             with open(os.path.join(configpath, 'users', username, 'attribs'), 'r') as f:
-                userdata = f.read()
+                userdata = json.load(f)
             userdata['deviceids'] = devids
             user = User(userdata)
             self.__users[user.id()] = user
 
-        # load access
+            shotpartids = os.listdir(os.path.join(configpath, 'users', username, 'access'))
+            for shotpartid in shotpartids:
+                if shotpartid not in allshotparts:
+                    log(1, 'shotpart %s is not part of this server' % shotpartid)
+                    continue
+                allshotparts[shotpartid].add_user(username)
 
-        for shotid, shot in self.__shots:
-            pass
+        configchanged = self.__shots != oldshots or self.__users != oldusers
+
+        if configchanged:
+            if self.__shots != oldshots:
+                alloldshotparts = {}
+                for shplist in self.__shots.values():
+                    for shp in shplist:
+                        alloldshotparts[shp.id()] = shp
+
+                newshotparts = [copy.deepcopy(x) for xid, x in allshotparts.items() if xid not in alloldshotparts]
+                removedshotparts = [copy.deepcopy(x) for xid, x in alloldshotparts.items() if xid not in allshotparts]
+                updatedshotparts = [copy.deepcopy(x) for xid, x in allshotparts.items() if xid in alloldshotparts and x != alloldshotparts[xid]]
+
+                self._enqueueEvent() # TODO: emit events
+
+        return configchanged
