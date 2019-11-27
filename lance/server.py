@@ -22,7 +22,6 @@ class Server(object):
 
 		self.config = {'config_root': config_root_path, 'data_root': data_root_path}
 
-
 		lance_utils.makedirs(self.config['data_root'])
 		lance_utils.makedirs(self.config['config_root'])
 
