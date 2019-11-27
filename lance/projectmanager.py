@@ -5,6 +5,8 @@ try:
 except ImportError:
     import json
 
+import string
+import random
 import copy
 
 from .servercomponent import ServerComponent
@@ -12,14 +14,17 @@ from .lance_utils import async_method
 from .logger import get_logger
 
 from . import syncthinghandler
+from . import eventprocessor
 
-from typing import Dict, Set, Optional, Iterable
+from typing import Union, List, Set, Dict, Set, Optional, Iterable
 
 
 class ConfigurationInconsistentError(RuntimeError):
     pass
 
+
 log = get_logger('ProjectManager')
+
 
 class ShotPart:
     def __init__(self, stfolder: syncthinghandler.Folder):
@@ -29,16 +34,21 @@ class ShotPart:
         self.__shot = None  # type: Optional[str]
         self.__stfolder = None  # type: Optional[syncthinghandler.Folder]
         self.__id = None  # type: Optional[str]
+        self.__name = None  # type: Optional[str]
         self.update_folder(stfolder)
 
     def _parseFolder(self):
         prjmeta = self.__stfolder.metadata()['__ProjectManager_data__']
         self.__project = prjmeta['project']
         self.__shot = prjmeta['shot']
+        self.__name = self.__stfolder.label()
         self.__id = self.__stfolder.id()
 
     def id(self):
         return self.__id
+
+    def name(self):
+        return self.__name
 
     def project(self):
         return self.__project
@@ -113,7 +123,7 @@ class User:
         self.__deviceids_tuple = None
 
 
-class ProjectManager(ServerComponent):
+class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface):
     """
     this component uses SyncthingHandler folders' metadata to keep project configuration
     there might be more than one project manager, each managing it's own project
@@ -137,8 +147,66 @@ class ProjectManager(ServerComponent):
         # TODO: detect required components in a more dynamic way
         self.__project = project
         self.__projectSettingsFolder = None
-        self.__shots = {}
+        self.__shots = {}  # type: Dict[str, Set[ShotPart]]
         self.__users = None
+        self._server.eventQueueEater.add_event_processor(self)
+
+    def run(self):
+        super(ProjectManager, self).run()
+        #just add a cleanup event after default run has exited
+        self._server.eventQueueEater.remove_event_provessor(self)
+
+    # Event processor methods
+    def add_event(self, event):
+        if isinstance(event, syncthinghandler.FoldersAddedEvent):  # This folders may be duplicated if rescanConfiguration
+            for folder in event.folders():
+                if '__ProjectManager_data__' not in folder.metadata():
+                    continue
+                metadata = folder.metadata()['__ProjectManager_data__']
+                if metadata['project'] != self.__project:
+                    continue
+
+                if folder.id() in (x.id() for x in self.__shots[metadata['shot']]):
+                    log(1, 'addFolderEvent: shot part is present: %s' % folder.id())
+                    continue
+
+                self.__shots[metadata['shot']].add(ShotPart(folder))
+        elif isinstance(event, syncthinghandler.FoldersChangedEvent):
+            for folder in event.folders():
+                if '__ProjectManager_data__' not in folder.metadata():
+                    continue
+                metadata = folder.metadata()['__ProjectManager_data__']
+                if metadata['project'] != self.__project:
+                    continue
+
+                for shotpart in self.__shots[metadata['shot']]:
+                    if shotpart.id() == folder.id():
+                        shotpart.update_folder(folder)
+                        break
+                else:
+                    log(3, 'shotpart update received, shotpart does not exist %s' % folder.id())
+        elif isinstance(event, syncthinghandler.FoldersVolatileDataChangedEvent):  # TODO: treat this event better
+            for folder in event.folders():
+                if '__ProjectManager_data__' not in folder.metadata():
+                    continue
+                metadata = folder.metadata()['__ProjectManager_data__']
+                if metadata['project'] != self.__project:
+                    continue
+
+                for shotpart in self.__shots[metadata['shot']]:
+                    if shotpart.id() == folder.id():
+                        shotpart.update_folder(folder)
+                        break
+                else:
+                    log(3, 'shotpart volatile update received, shotpart does not exist %s' % folder.id())
+
+    @classmethod
+    def is_init_event(cls, event):
+        raise RuntimeError("this should not be called! don't add this handler as autohandler to queueeater!")
+
+    def is_expected_event(self, event):
+        return isinstance(event, syncthinghandler.FoldersConfigurationEvent)
+    # End Event processor methods
 
     def __rescanConfiguration(self):
         try:
@@ -146,11 +214,13 @@ class ProjectManager(ServerComponent):
         except Exception as e:
             raise ConfigurationInconsistentError('syncthing returned %s' % repr(e))
 
+        oldshotconfigfolder = self.__projectSettingsFolder
         oldshots = self.__shots
         oldusers = self.__users
         self.__shots = {}
         self.__users = {}
         allshotparts = {}  # type: Dict[str, ShotPart]
+        self.__projectSettingsFolder = None
 
         # load project folders
         for fid, folder in folders.items():
@@ -170,6 +240,9 @@ class ProjectManager(ServerComponent):
                 if shotid not in self.__shots:
                     self.__shots[shotid] = set()
                 self.__shots[shotid].add(shotpart)
+
+        if self.__projectSettingsFolder is None:
+            # maybe syncthing handler is still in sync, so we will wait for it
 
         # load users
         configpath = self.__projectSettingsFolder.path()
@@ -202,6 +275,41 @@ class ProjectManager(ServerComponent):
                 removedshotparts = [copy.deepcopy(x) for xid, x in alloldshotparts.items() if xid not in allshotparts]
                 updatedshotparts = [copy.deepcopy(x) for xid, x in allshotparts.items() if xid in alloldshotparts and x != alloldshotparts[xid]]
 
-                self._enqueueEvent() # TODO: emit events
+                #self._enqueueEvent()  # TODO: emit events
 
         return configchanged
+
+    # interface methods
+    def __interface_addShot(self, shotname: str, shotid: str, path: str):
+        """
+        add a shot with one shotpart to this project
+        :shotname: human readable shot name for display
+        :shotid: less human readable unique shot identificator
+        :path: path on file system to the shot folder, local for the server, will not be sent to or from clients
+        :return:
+        """
+        meta = {}
+        meta['__ProjectManager_data__'] = {'type': 'shotpart',
+                                           'project': self.__project,
+                                           'shot': shotid}
+        fid = "folder-{project}-{shotid}-shotpart-{randstr}".format(project=self.__project, shotid=shotid, randstr=''.join(random.choice(string.ascii_lowercase) for _ in range(16)))
+
+        self.__sthandler.add_folder(path, shotname, devList=None, metadata=meta, overrideFid=fid)
+        # now we should wait for sthandler to send addfolder event for our fid
+
+    @async_method
+    def add_shot(self, shotname: str, shotid: str, path: str):
+        return self.__interface_addShot(shotname, shotid, path)
+
+    @async_method
+    def remove_shot(self, shotid: str):
+        for shotpart in self.__shots[shotid]:
+            self.__sthandler.remove_folder(shotpart.id())
+
+    @async_method
+    def remove_shotpart(self, shotpart: Union[str, ShotPart]):
+        if isinstance(shotpart, ShotPart):
+            return self.__sthandler.remove_folder(shotpart.id())
+        elif isinstance(shotpart, str):
+            return self.__sthandler.remove_folder(shotpart)
+        raise AttributeError('attrib shotpart of wrong type: %s' % repr(type(shotpart)))
