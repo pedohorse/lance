@@ -49,7 +49,7 @@ class AddRemoveFoldersTest(TestBase):
             fidB = self.srv.syncthingHandler.add_folder(fpath1s, 'folder_B', [cl1id]).result()
             fidC = self.srv.syncthingHandler.add_folder(fpath2s, 'folder_C', [cl2id]).result()
 
-            for i in range(3):
+            for i in range(5):
                 self.srv.start()
                 self.cl0.start()
                 self.cl1.start()
@@ -90,7 +90,7 @@ class AddRemoveFoldersTest(TestBase):
                 self.srv.syncthingHandler.add_device_to_folder(fidB, cl2id).result()
                 self.srv.syncthingHandler.add_device_to_folder(fidC, cl0id).result()
 
-                time.sleep(35)
+                time.sleep(25)
 
                 assert not os.path.exists(os.path.join(self.test_root_path(), 'cl0', 'data', 'folder_A')), 'FolderA not deleted from cl0'
                 assert not os.path.exists(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_B')), 'FolderB not deleted from cl1'

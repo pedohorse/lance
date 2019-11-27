@@ -15,7 +15,7 @@ from PySide2.QtWidgets import QApplication
 
 class AddRemoveFoldersTest_gui(TestBase):
     def run(self):
-
+        self.error = None
         self.qapp = QApplication(sys.argv)
         self.wgt0 = DetailViewer()
         self.wgt0.show()
@@ -23,6 +23,8 @@ class AddRemoveFoldersTest_gui(TestBase):
         testthread = threading.Thread(target=self.runthread)
         testthread.start()
         self.qapp.exec_()
+        if self.error is not None:
+            raise self.error
 
     def runthread(self):
         try:
@@ -83,7 +85,7 @@ class AddRemoveFoldersTest_gui(TestBase):
                 with open(os.path.join(fpath2s, 'f2_test.txt'), 'w') as f:
                     f.write(s2)
 
-                time.sleep(35)
+                time.sleep(15)
 
                 with open(os.path.join(fpath0s, 'f0_test.txt'), 'r') as f:
                     ss0 = f.read()
@@ -113,7 +115,7 @@ class AddRemoveFoldersTest_gui(TestBase):
                 self.srv.syncthingHandler.add_device_to_folder(fidB, cl0id).result()
                 self.srv.syncthingHandler.add_device_to_folder(fidC, cl1id).result()
 
-                time.sleep(35)
+                time.sleep(15)
 
                 assert not os.path.exists(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_A')), 'FolderA not deleted from cl1'
                 assert not os.path.exists(os.path.join(self.test_root_path(), 'cl2', 'data', 'folder_B')), 'FolderB not deleted from cl2'
@@ -142,7 +144,7 @@ class AddRemoveFoldersTest_gui(TestBase):
                 self.srv.syncthingHandler.add_device_to_folder(fidB, cl2id).result()
                 self.srv.syncthingHandler.add_device_to_folder(fidC, cl0id).result()
 
-                time.sleep(25)
+                time.sleep(15)
 
                 assert not os.path.exists(os.path.join(self.test_root_path(), 'cl0', 'data', 'folder_A')), 'FolderA not deleted from cl0'
                 assert not os.path.exists(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_B')), 'FolderB not deleted from cl1'
@@ -180,6 +182,9 @@ class AddRemoveFoldersTest_gui(TestBase):
                 self.srv.syncthingHandler.add_device_to_folder(fidA, cl0id).result()
                 self.srv.syncthingHandler.add_device_to_folder(fidB, cl1id).result()
                 self.srv.syncthingHandler.add_device_to_folder(fidC, cl2id).result()
+        except Exception as e:
+            self.error = e
+            self.qapp.quit()
         finally:
             if isinstance(self.wgt0, DetailViewer):
                 self.wgt0.close()
