@@ -9,7 +9,7 @@ import re
 
 if __name__ == '__main__':
     results = {}
-    filterre = '.*'
+    filterre = re.compile('.*')
     if len(sys.argv) > 1:
         try:
             filterre = re.compile(sys.argv[1])
