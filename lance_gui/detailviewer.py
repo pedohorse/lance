@@ -105,6 +105,11 @@ class DeviceFolderModel_Base(QAbstractItemModel):
             parent.addChild(item)
             for subval in val:
                 self._createItem(item, '', subval)
+        elif isinstance(val, dict):
+            item = DeviceFolderModel_Base.TreeElement((key, ''))
+            parent.addChild(item)
+            for subkey, subval in val.items():
+                self._createItem(item, subkey, subval)
         else:
             parent.addChild(DeviceFolderModel_Base.TreeElement((key, val)))
 
@@ -220,7 +225,7 @@ class DeviceModel(DeviceFolderModel_Base):
 
 class FolderModel(DeviceFolderModel_Base):
     def __init__(self, parent=None):
-        super(FolderModel, self).__init__('label', None, ['label', 'path', 'id', 'devices'], parent=parent)
+        super(FolderModel, self).__init__('label', None, ['label', 'is_synced', 'path', 'id', 'devices'], parent=parent)
 
 
 class DetailViewer(QMainWindow):
