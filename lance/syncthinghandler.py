@@ -193,14 +193,18 @@ class Device:
 
 
 class Folder:
-    def __init__(self, sthandler: 'SyncthingHandler', id: str, label: str, path: Optional[str] = None, devices: Optional[Iterable] = None):
+    def __init__(self, sthandler: 'SyncthingHandler', id: str, label: str, path: Optional[str] = None, devices: Optional[Iterable] = None, metadata=None):
         self.__stfid = id
         self.__label = label
         self.__path = path
         self.__devices = set(devices) if devices is not None else set()
         self.__sthandler = sthandler
         self.__volatiledata = DeviceVolatileData()
-        self.__metadata = {}
+        if metadata is None:
+            metadata = {}
+        else:
+            metadata = copy.deepcopy(metadata)
+        self.__metadata = metadata
 
     def _setMetadata(self, metadata):
         """
@@ -214,6 +218,9 @@ class Folder:
         this is supposed to be immutable,
         """
         return self.__metadata
+
+    def is_synced(self) -> bool:
+        return self.__volatiledata.get('summary', {}).get('needTotalItems', -1) == 0
 
     def volatile_data(self):
         return self.__volatiledata
@@ -349,6 +356,18 @@ class FoldersVolatileDataChangedEvent(FoldersConfigurationEvent):
     pass
 
 
+class ConfigSyncChangedEvent(BaseEvent):
+    def __init__(self, insync: bool):
+        super(ConfigSyncChangedEvent, self).__init__()
+        self.__insync = insync
+
+    def in_sync(self) -> bool:
+        return self.__insync
+
+    def progress(self) -> float:
+        return 1 if self.__insync else 0
+
+
 #  MAIN GUY
 class SyncthingHandler(ServerComponent):
 
@@ -367,7 +386,7 @@ class SyncthingHandler(ServerComponent):
         super(SyncthingHandler, self).__init__(server)
 
         self.__log = get_logger(self.__class__.__name__)
-        self.__log.min_log_level = 0
+        self.__log.min_log_level = 1
 
         self.syncthing_bin = r'syncthing'
         self.data_root = server.config['data_root']  # os.path.join(os.path.split(os.path.abspath(__file__))[0], r'data')
@@ -391,10 +410,10 @@ class SyncthingHandler(ServerComponent):
         self.__isValidState = True
         self.__configInSync = False
         self.__reload_configuration()
-        if self.isServer():  # register special server event processors
+        if self._isServer():  # register special server event processors
             self.__updateClientConfigs()
         self.__log = get_logger('%s %s' % (self.myId()[:5], self.__class__.__name__))
-        self.__log.min_log_level = 0
+        self.__log.min_log_level = 1
 
 
     def start(self):
@@ -418,7 +437,7 @@ class SyncthingHandler(ServerComponent):
         self.__myid = res
         return res
 
-    def isServer(self):
+    def _isServer(self):
         return self.myId() in self.__servers
 
     def _runLoopLoad(self):
@@ -446,23 +465,52 @@ class SyncthingHandler(ServerComponent):
                 for stevent in stevents:
                     # filter and pack events into our wrapper
                     self.__log(1, 'event type "%s"' % stevent['type'])
-                    if stevent['type'] == 'ItemFinished':
-                        data = stevent['data']
-                        if data['folder'] in self.get_config_folder().fid():
-                            event = ControlEvent(stevent)
-                    else:  # General event
-                        event = SyncthingEvent(stevent)
+
+                    if stevent['type'] == 'StartupComplete':
+                        # syncthing loaded. either first load, or syncthing restarted after configuration save
+                        # must check configuration
+                        self.__log(1, 'StartupComplete event received, config in sync =%s' % repr(self.__configInSync))
+                        try:
+                            configstatus = self.__get('/rest/db/status', folder=self.get_config_folder().fid())
+                            configsynced = configstatus['needTotalItems'] == 0
+                            self.__log(1, 'probed config folder status, synced =%s' % repr(configsynced))
+                            if self.__configInSync != configsynced:
+                                self.__configInSync = configsynced
+                                if self.__configInSync:
+                                    try:
+                                        self.__reload_configuration()
+                                    except Exception as e:
+                                        self.__log(2, 'config reload failed cuz of %s probably being updated by syncthing' % repr(e))
+                                        self.__configInSync = False
+                                event = ConfigSyncChangedEvent(self.__configInSync)
+                        except requester.HTTPError as e:
+                            if e.code == 404:  # looks like syncthing config was not saved. how did this happen??
+                                self.__log(4, 'syncthing config was not properly initialized')
+                                self.__stop_syncthing()
+                                self.__generateInitialConfig()
+                                self.__start_syncthing()
+                                return  # drop existing events, we will get new StartupComplete event
+                            else:
+                                raise
 
                     # Config sincronization event processing
-                    if self.__configInSync and stevent['type'] == 'ItemStarted' and stevent['data']['folder'] == self.get_config_folder().fid():  # need to send him the configuration
+                    elif self.__configInSync and stevent['type'] == 'ItemStarted' and stevent['data']['folder'] == self.get_config_folder().fid():  # need to send him the configuration
                         self.__configInSync = False
+                        event = ConfigSyncChangedEvent(False)
                     elif not self.__configInSync and stevent['type'] == 'FolderSummary' and stevent['data']['folder'] == self.get_config_folder().fid():
                         data = stevent['data']
                         if data['summary']['needTotalItems'] == 0:
-                            self.__reload_configuration()
+                            self.__configInSync = True
+                            try:
+                                self.__reload_configuration()  # TODO: add parameter to nobootstrap, cuz we need to override bootstrap at this point
+                                self.__save_bootstrapConfig()
+                            except Exception as e:
+                                self.__log(2, 'config reload failed cuz of %s. probably being updated by syncthing' % repr(e))
+                                self.__configInSync = False
+                            event = ConfigSyncChangedEvent(True)
 
                     # Folder Statue event
-                    if stevent['type'] == 'FolderSummary':
+                    elif stevent['type'] == 'FolderSummary':
                         fid = stevent['data']['folder']
                         if fid in self.__folders:
                             self.__folders[fid]._updateVolatileData(stevent['data'])
@@ -490,6 +538,12 @@ class SyncthingHandler(ServerComponent):
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__log(1, repr(self.__devices[did].volatile_data()))
                             event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event')
+                    #elif stevent['type'] == 'ItemFinished':
+                    #    data = stevent['data']
+                    #    if data['folder'] in self.get_config_folder().fid():
+                    #        event = ControlEvent(stevent)
+                    else:  # General event
+                        event = SyncthingEvent(stevent)
 
                     if event is not None:
                         self.__log(1, "sending event %s" % repr(event))
@@ -500,48 +554,29 @@ class SyncthingHandler(ServerComponent):
             yield
 
     def __generateInitialConfig(self):
+        self.__log(1, 'Generating initial configuration')
         dorestart = self.syncthing_running()
         try:
             if dorestart:
                 self.__stop_syncthing()
             try:
                 self.myId()
-                return  # if we can get id - config is already generated
+                self.__log(1, 'syncthing keys already exist')
+                # if we can get id - config is already generated
             except NoInitialConfiguration:
-                pass
+                self.__log(1, 'generating syncthing keys')
+                proc = subprocess.Popen([self.syncthing_bin, '-generate={home}'.format(home=self.config_root)])
+                proc.wait()
+                if proc.poll() != 0:
+                    raise RuntimeError('Could not generate initial configuration')
 
-            # # we dont care about syncthing config, but we need certeficates!
-            # proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_gui_ip, port=self.syncthing_gui_port), '-paused'], stdout=subprocess.PIPE)
-            #
-            # def _killproc(proc):
-            #     proc.stdout.close()
-            #     proc.terminate()
-            #     time.sleep(5)
-            #     if proc.poll() is None:
-            #         proc.kill()
-            #         proc.join()
-            #
-            # for i in range(100):
-            #     line = proc.stdout.readline().decode()
-            #     self.__log(1, line)
-            #     if 'Default config saved' in line:
-            #         _killproc(proc)
-            #         break
-            # else:
-            #     _killproc(proc)
-            #     raise lance_utils.SyncthingError('unable to generate config!')
-            proc = subprocess.Popen([self.syncthing_bin, '-generate={home}'.format(home=self.config_root)])
-            proc.wait()
-            if proc.poll() != 0:
-                raise RuntimeError('Could not generate initial configuration')
+                # lets generate initial cache
+                self.myId()
+                self.__apikey = hashlib.sha1((self.myId() + '-apikey-%s' % ''.join((random.choice(string.ascii_letters) for _ in range(16)))).encode('UTF-8')).hexdigest()
+                self.__server_secret = ''.join((random.choice(string.ascii_letters) for _ in range(24)))
 
-            # lets generate initial cache
-            self.myId()
-            self.__apikey = hashlib.sha1((self.myId() + '-apikey-%s' % ''.join((random.choice(string.ascii_letters) for _ in range(16)))).encode('UTF-8')).hexdigest()
-            self.__server_secret = ''.join((random.choice(string.ascii_letters) for _ in range(24)))
-
-            self.__servers = set()
-            self.__devices = {self.myId(): Device(self, self.myId())}
+                self.__servers = set()
+                self.__devices = {self.myId(): Device(self, self.myId())}
             self.__save_configuration()
 
         finally:
@@ -563,14 +598,14 @@ class SyncthingHandler(ServerComponent):
         :param devid:
         :return:
         """
-        if not self.isServer():
+        if not self._isServer():
             if devid is None:
                 return SyncthingHandler.ControlFolder(fid='control-%s' % hashlib.sha1((':'.join([self.__server_secret, self.myId()])).encode('UTF-8')).hexdigest(),
                                                       path=os.path.join(self.data_root, 'control', self.myId())
                                                       )
             else:
                 raise RuntimeError('wat do u think ur doin?')
-        if self.isServer() and devid is None:
+        if self._isServer() and devid is None:
             return SyncthingHandler.ControlFolder(fid='server_configuration-%s' % hashlib.sha1(self.__server_secret.encode('UTF-8')).hexdigest(),
                                                   path=os.path.join(self.data_root, 'server')
                                                   )
@@ -584,6 +619,13 @@ class SyncthingHandler(ServerComponent):
 
     # INTERFACE
     # note: all getters are doing copy to avoid race conditions
+    def config_synced(self):
+        return self.__configInSync  # should be python-atomic
+
+    @async_method
+    def is_server(self):
+        return self._isServer()
+
     @async_method
     def get_devices(self):
         return copy.deepcopy(self.__devices)
@@ -605,12 +647,16 @@ class SyncthingHandler(ServerComponent):
         return self.__interface_addDevice(deviceid, name)
 
     @async_method
-    def add_folder(self, folderPath, label, devList=None):
-        return self.__interface_addFolder(folderPath, label, devList)
+    def add_folder(self, folderPath, label, devList=None, metadata=None, overrideFid=None):
+        return self.__interface_addFolder(folderPath, label, devList, metadata, overrideFid)
+
+    @async_method
+    def remove_folder(self, folderId):
+        return self.__interface_removeFolder(folderId)
 
     @async_method
     def add_device_to_folder(self, fid, did):
-        if not self.isServer():
+        if not self._isServer():
             raise RuntimeError('device list is provided by server')
         if did not in self.__devices:
             raise RuntimeError('device %s does not belong to this server' % did)
@@ -625,7 +671,7 @@ class SyncthingHandler(ServerComponent):
             self.__save_st_config()
             for dev in self.__folders[fid].devices():
                 self.__save_device_configuration(dev)
-            self._enqueueEvent(FoldersChangedEvent((self.__folders[fid],), 'external::add_device_to_folder'))
+            self._enqueueEvent(FoldersChangedEvent((copy.deepcopy(self.__folders[fid]),), 'external::add_device_to_folder'))
 
     @async_method
     def remove_device_from_folder(self, fid, did):
@@ -643,7 +689,7 @@ class SyncthingHandler(ServerComponent):
             for dev in self.__folders[fid].devices():
                 self.__save_device_configuration(dev)
             self.__save_device_configuration(did)
-            self._enqueueEvent(FoldersChangedEvent((self.__folders[fid],), 'external::remove_device_from_folder'))
+            self._enqueueEvent(FoldersChangedEvent((copy.deepcopy(self.__folders[fid]),), 'external::remove_device_from_folder'))
 
     @async_method
     def set_server_secret(self, secret):
@@ -654,7 +700,7 @@ class SyncthingHandler(ServerComponent):
 
     @async_method
     def set_device_name(self, did, name):
-        if not self.isServer():
+        if not self._isServer():
             raise RuntimeError('only server can do that')
         if did not in self.__devices:
             raise RuntimeError('%s is not part of this server' % did)
@@ -664,7 +710,7 @@ class SyncthingHandler(ServerComponent):
         self.__save_configuration()
         self.__save_st_config()
         self.__save_device_configuration(self.__devices[did])
-        self._enqueueEvent(DevicesChangedEvent((self.__devices[did],), 'external::set_device_name'))
+        self._enqueueEvent(DevicesChangedEvent((copy.deepcopy(self.__devices[did]),), 'external::set_device_name'))
 
     @async_method
     def reload_configuration(self):
@@ -672,40 +718,42 @@ class SyncthingHandler(ServerComponent):
     # END INTERFACE
 
     def __interface_addDevice(self, deviceid, name=None):
-        if not self.isServer():
+        if not self._isServer():
             raise RuntimeError('device list is provided by server')
         if deviceid in self.__devices:
             return
+        self.__log(1, 'adding device %s' % deviceid)
         self.__devices[deviceid] = Device(self, deviceid, name=name)
         self.__save_configuration()
         self.__save_st_config()
-        if self.isServer():
+        if self._isServer():
             for dev in self.__devices:
                 self.__save_device_configuration(dev)
-        self._enqueueEvent(DevicesAddedEvent((self.__devices[deviceid],), 'external::add_device'))
+        self._enqueueEvent(DevicesAddedEvent((copy.deepcopy(self.__devices[deviceid]),), 'external::add_device'))
 
     def __interface_addServer(self, deviceid):
         if deviceid in self.__servers:
             return
         if deviceid not in self.__devices:
             self.__devices[deviceid] = Device(self, deviceid)
+        self.__log(1, 'adding server %s' % deviceid)
         self.__servers.add(deviceid)
 
         self.__save_configuration()
         self.__save_st_config()
-        if self.isServer():
+        if self._isServer():
             for dev in self.__devices:
                 self.__save_device_configuration(dev)
 
-    def __interface_addFolder(self, folderPath, label, devList=None):
-        if not self.isServer():
+    def __interface_addFolder(self, folderPath, label, devList=None, metadata=None, overrideFid=None):
+        if not self._isServer():
             raise RuntimeError('device list is provided by server')
         if devList is None:
             devList = []
         assert isinstance(label, str), 'label must be string'
         assert isinstance(devList, list) or isinstance(devList, set) or isinstance(devList, tuple), 'devList must be a list'
         assert isinstance(folderPath, str), 'folderPath must be a string'
-
+        self.__log(1, 'adding folder %s' % label)
         for dev in devList:
             if dev not in self.__devices:
                 raise RuntimeError('device %s does not belong to this server' % dev)
@@ -713,23 +761,47 @@ class SyncthingHandler(ServerComponent):
         if len([x for x in self.__folders if self.__folders[x].path() == folderPath]) > 0:
             return
 
-        fid = 'folder-' + ''.join(random.choice(string.ascii_lowercase) for _ in range(16))
-        self.__folders[fid] = Folder(self, fid, label, folderPath, devList)
-            #{'attribs': {'path': folderPath, 'label':label}, 'devices': set(devList)}
+        if overrideFid is not None:
+            fid = overrideFid
+            if fid in self.__folders:
+                raise RuntimeError('given fid already exists! %s' % fid)
+        else:
+            for _ in range(32):
+                fid = 'folder-' + ''.join(random.choice(string.ascii_lowercase) for _ in range(16))
+                if fid not in self.__folders:
+                    break
+            else:
+                raise RuntimeError('unexpected probability! call ghost busters')
+        self.__folders[fid] = Folder(self, fid, label, folderPath, devList, metadata)
 
         self.__save_configuration()
         self.__save_st_config()
         for dev in devList:
             self.__save_device_configuration(dev)
-        self._enqueueEvent(FoldersAddedEvent((self.__folders[fid],), 'external::add_folder'))
+        self._enqueueEvent(FoldersAddedEvent((copy.deepcopy(self.__folders[fid]),), 'external::add_folder'))
         return fid
 
-    def __reload_configuration(self):
+    def __interface_removeFolder(self, folderId: str):
+        if not self._isServer():
+            raise RuntimeError('device list is provided by server')
+        assert isinstance(folderId, str), 'folderId must be str'
+        if folderId not in self.__folders:
+            return
+
+        folder = self.__folders[folderId]
+        del self.__folders[folderId]
+
+        self._enqueueEvent(FoldersRemovedEvent((copy.deepcopy(folder),), 'external::remove_folder'))
+
+    def __reload_configuration(self, use_bootstrap=True):
         """
         loads server/client configuration, ensures configuration is up to date
         :return: bool if configuration has changed
         """
-        self.__log(2, 'reloading configuration')
+        self.__log(1, 'reloading configuration')
+        if not self.__configInSync:
+            self.__log(2, 'configuration not in sync!')
+            #return None
         if not os.path.exists(os.path.join(self.config_root, 'syncthinghandler_config.json')):  # initialization time!
             self.__generateInitialConfig()
 
@@ -759,10 +831,14 @@ class SyncthingHandler(ServerComponent):
         oldfolders = self.__folders
         oldignoredevices = self.__ignoreDevices
 
-        if len(self.__servers) == 0:  # Initial config loading
-            self.__servers = set(config.get('servers', ()))  # bootstrap to have isServer resolving correctly
-            self.__log(1, 'server list loaded from bootstrap config')
-        self.__log(1, 'server list:', self.__servers)
+        #if len(self.__servers) == 0:  # Initial config loading
+        if use_bootstrap:
+            self.__servers = set(config.get('servers', ()))  # bootstrap to have _isServer resolving correctly
+            self.__log(1, 'server list loaded from bootstrap config: %s' % repr(self.__servers))
+        else:
+            self.__servers = {}
+            self.__log(1, 'bootstrap server list ignored')
+        #self.__log(1, 'server list:', self.__servers)
 
         configFoldPath = os.path.join(self.get_config_folder().path(), 'configuration')
         self.__log(1, 'configuration path: %s' % configFoldPath)
@@ -779,7 +855,7 @@ class SyncthingHandler(ServerComponent):
         #                 raise
 
         try:
-            self.__servers = set(listdir(os.path.join(configFoldPath, 'servers')))
+            self.__servers.update(set(listdir(os.path.join(configFoldPath, 'servers'))))  # either update with bootstrapped, or with empty
             self.__log(1, 'final server list:', self.__servers)
             self.__devices = {}
             for dev in listdir(os.path.join(configFoldPath, 'devices')):
@@ -793,7 +869,7 @@ class SyncthingHandler(ServerComponent):
                     olddevice.__dict__.update(newdevice.__dict__)
                     newdevice = olddevice
                 self.__devices[dev] = newdevice
-                #if isServer:
+                #if _isServer:
                 #    self.__devices[dev]['controlfolder'] = {'fid': 'control-%s' % hashlib.sha1((':'.join([self.__server_secret, dev])).encode('UTF-8')).hexdigest(),
                 #                                            'path': os.path.join(self.data_root, 'control', dev)
                 #                                            }  # ensure controlfolder attr exist
@@ -802,8 +878,9 @@ class SyncthingHandler(ServerComponent):
             # check server-dev list consistency
             for srv in set(self.__servers):
                 if srv not in self.__devices:
-                    self.__log(4, 'server %s not in device list! skipping...' % srv)
-                    self.__servers.remove(srv)
+                    self.__log(4, 'server %s not in device list! adding...' % srv)
+                    self.__devices[srv] = Device(self, srv, None)
+                    #self.__servers.remove(srv)
 
             self.__folders = {}
             for fid in listdir(os.path.join(configFoldPath, 'folders')):
@@ -840,7 +917,7 @@ class SyncthingHandler(ServerComponent):
             #TODO: save local json config, just servers, all else should be empty
 
         configChanged = configChanged or oldservers != self.__servers or olddevices != self.__devices or oldfolders != self.__folders or oldignoredevices != self.__ignoreDevices
-        if not self.isServer():  # for client - if we have folders removed - those folders must be deleted immediately
+        if not self._isServer():  # for client - if we have folders removed - those folders must be deleted immediately
             for fid in oldfolders:
                 if fid in self.__folders:
                     continue
@@ -856,11 +933,13 @@ class SyncthingHandler(ServerComponent):
                 except Exception as e:
                     self.__log(5, 'unexpected error occured: %s' % repr(e))
 
-        self.__configInSync = True
+        #if not self.__configInSync:
+        #    self.__configInSync = True
+        #    self._enqueueEvent(ConfigSyncChangedEvent(True))
         if configChanged:
             self.__log(1, 'state changed, resaving st config')
             self.__save_st_config()
-            if self.isServer():  # TODO: update only affected ones !
+            if self._isServer():  # TODO: update only affected ones !
                 for dev in self.__devices:
                     self.__save_device_configuration(dev)
 
@@ -885,6 +964,7 @@ class SyncthingHandler(ServerComponent):
             foldersadded = [copy.deepcopy(y) for x, y in self.__folders.items() if x not in olddevices]
             foldersremoved = [copy.deepcopy(y) for x, y in oldfolders.items() if x not in self.__folders]
             foldersupdated = [copy.deepcopy(y) for x, y in oldfolders.items() if x in self.__folders and y != self.__folders[x]]
+            __debug_foldersupdated = [y for x, y in self.__folders.items() if x in oldfolders and y != oldfolders[x]]
             if len(foldersadded) > 0:
                 self._enqueueEvent(FoldersAddedEvent(foldersadded, 'reload_configuration'))
                 self.__log(1, 'foldersadded event enqueued %s' % repr(foldersadded))
@@ -895,13 +975,13 @@ class SyncthingHandler(ServerComponent):
                 self._enqueueEvent(FoldersChangedEvent(foldersupdated, 'reload_configuration'))
                 self.__log(1, 'foldersupdated event enqueued %s' % repr(foldersupdated))
             # check
-            for fld in foldersupdated:
+            for fld in __debug_foldersupdated:
                 assert fld is __debug_oldfolders[fld.id()], 'modified device is not the same object'
         # /events sent
         return configChanged
 
     def __save_device_configuration(self, dev):
-        assert self.isServer(), "must be server to save config for devices"
+        assert self._isServer(), "must be server to save config for devices"
         assert dev in self.__devices, "unknown device"
 
         devfids = [fid for fid in self.__folders if dev in self.__folders[fid].devices()]
@@ -952,6 +1032,22 @@ class SyncthingHandler(ServerComponent):
         for dev in self.__ignoreDevices:
             os.mknod(os.path.join(_ignpath, dev))
 
+    def __save_bootstrapConfig(self):
+        self.__log(1, "saving bootstrap configuration")
+        config = {}
+        config['apikey'] = self.__apikey
+        config['server_secret'] = self.__server_secret
+
+        # only bootstrap and local info is saved here, like servers list and folder paths
+        config['servers'] = list(self.__servers)
+        config['devices'] = {id: {'id': self.__devices[id].id(), 'name': self.__devices[id].name()} for id in self.__devices}
+        config['folders'] = {id: {'attribs': {'path': self.__folders[id].path()}} for id in self.__folders}
+        # for fid in config['folders']:
+        #    config['folders'][fid]['devices'] = list(config['folders'][fid]['devices'])
+        config['ignoreDevices'] = list(self.__ignoreDevices)
+
+        with open(os.path.join(self.config_root, 'syncthinghandler_config.json'), 'w') as f:
+            json.dump(config, f, indent=4)
 
     def __save_configuration(self):
         """
@@ -959,6 +1055,7 @@ class SyncthingHandler(ServerComponent):
         both server and client dumps cache of current config to json file, though  it should only be used as abootstrap
         :return:
         """
+        self.__log(1, 'saving configuration')
         # check consistency, just in case
         for srv in tuple(self.__servers):
             if srv not in self.__devices:
@@ -975,62 +1072,49 @@ class SyncthingHandler(ServerComponent):
             if self.syncthing_running():
                 self.__post('/rest/system/pause', {})
 
-            config = {}
-            config['apikey'] = self.__apikey
-            config['server_secret'] = self.__server_secret
-
-            # only bootstrap and local info is saved here, like servers list and folder paths
-            config['servers'] = list(self.__servers)
-            config['devices'] = {id: {'id': self.__devices[id].id(), 'name': self.__devices[id].name()} for id in self.__devices}
-            config['folders'] = {id: {'attribs': {'path': self.__folders[id].path()}} for id in self.__folders}
-            #for fid in config['folders']:
-            #    config['folders'][fid]['devices'] = list(config['folders'][fid]['devices'])
-            config['ignoreDevices'] = list(self.__ignoreDevices)
-
-            with open(os.path.join(self.config_root, 'syncthinghandler_config.json'), 'w') as f:
-                json.dump(config, f, indent=4)
+            self.__save_bootstrapConfig()
 
             configFoldPath = os.path.join(self.get_config_folder().path(), 'configuration')
 
             _devpath = os.path.join(configFoldPath, 'devices')
-            shutil.rmtree(_devpath, ignore_errors=True)  # clear existing
-
             _srvpath = os.path.join(configFoldPath, 'servers')
-            shutil.rmtree(_srvpath, ignore_errors=True)  # clear existing
-
             _fldpath = os.path.join(configFoldPath, 'folders')
-            shutil.rmtree(_fldpath, ignore_errors=True)  # clear existing
-
             _ignpath = os.path.join(configFoldPath, 'ignoredevices')
-            shutil.rmtree(_ignpath, ignore_errors=True)  # clear existing
+            if self._isServer():
+                shutil.rmtree(_devpath, ignore_errors=True)  # clear existing
+                shutil.rmtree(_srvpath, ignore_errors=True)  # clear existing
+                shutil.rmtree(_fldpath, ignore_errors=True)  # clear existing
+                shutil.rmtree(_ignpath, ignore_errors=True)  # clear existing
 
-            os.makedirs(_devpath)
-            os.makedirs(_srvpath)
-            os.makedirs(_fldpath)
-            os.makedirs(_ignpath)
+            #not for server - just make sure these folders exists
+            os.makedirs(_devpath, exist_ok=True)
+            os.makedirs(_srvpath, exist_ok=True)
+            os.makedirs(_fldpath, exist_ok=True)
+            os.makedirs(_ignpath, exist_ok=True)
 
-            # save servers
-            for server in self.__servers:
-                os.mknod(os.path.join(_srvpath, server))
-            # save devices
-            for dev in self.__devices:
-                with open(os.path.join(_devpath, dev), 'w') as f:
-                    f.write(self.__devices[dev].serialize())
-                    #json.dump(self.__devices[dev], f)
-            # save folders
-            for fid in self.__folders:
-                fiddevpath = os.path.join(_fldpath, fid, 'devices')
-                shutil.rmtree(fiddevpath, ignore_errors=True)
-                os.makedirs(fiddevpath)
-                for dev in self.__folders[fid].devices():
-                    os.mknod(os.path.join(fiddevpath, dev))
-                with open(os.path.join(_fldpath, fid, 'attribs'), 'w') as f:
-                    json.dump({'fid': fid, 'label': self.__folders[fid].label()}, f)
-                with open(os.path.join(_fldpath, fid, 'metadata'), 'w') as f:
-                    json.dump(self.__folders[fid].metadata(), f)
-            # save ign dev
-            for dev in self.__ignoreDevices:
-                os.mknod(os.path.join(_ignpath, dev))
+            if self._isServer():
+                # save servers
+                for server in self.__servers:
+                    os.mknod(os.path.join(_srvpath, server))
+                # save devices
+                for dev in self.__devices:
+                    with open(os.path.join(_devpath, dev), 'w') as f:
+                        f.write(self.__devices[dev].serialize())
+                        #json.dump(self.__devices[dev], f)
+                # save folders
+                for fid in self.__folders:
+                    fiddevpath = os.path.join(_fldpath, fid, 'devices')
+                    shutil.rmtree(fiddevpath, ignore_errors=True)
+                    os.makedirs(fiddevpath)
+                    for dev in self.__folders[fid].devices():
+                        os.mknod(os.path.join(fiddevpath, dev))
+                    with open(os.path.join(_fldpath, fid, 'attribs'), 'w') as f:
+                        json.dump({'fid': fid, 'label': self.__folders[fid].label()}, f)
+                    with open(os.path.join(_fldpath, fid, 'metadata'), 'w') as f:
+                        json.dump(self.__folders[fid].metadata(), f)
+                # save ign dev
+                for dev in self.__ignoreDevices:
+                    os.mknod(os.path.join(_ignpath, dev))
         finally:
             if self.syncthing_running():
                 self.__post('/rest/system/resume', {})
@@ -1047,7 +1131,7 @@ class SyncthingHandler(ServerComponent):
         blacklist = self.__ignoreDevices
         folders = self.__folders
 
-        if self.isServer():
+        if self._isServer():
             serverConfigFolder = self.get_config_folder()
             #fid = 'server_configuration-%s' % hashlib.sha1(self.__server_secret.encode('UTF-8')).hexdigest()
             sconf = ET.SubElement(conf, 'folder', {'id': serverConfigFolder.fid(), 'label': 'server configuration', 'path': serverConfigFolder.path(), 'type': 'sendreceive'})
@@ -1162,18 +1246,24 @@ class SyncthingHandler(ServerComponent):
             self.__stop_syncthing()
 
     def __start_syncthing(self):
+        self.__log(1, 'starting syncthing process...')
         if not self.syncthing_proc or self.syncthing_proc.poll() is not None:
             self._last_event_id = 0
             self.syncthing_proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-browser', '-no-restart', '-gui-address={addr}:{port}'.format(addr=self.syncthing_gui_ip, port=self.syncthing_gui_port)])
+            self.__log(1, 'syncthing started')
             return True
+        self.__log(1, 'syncthing was not running')
         return False
 
     def __stop_syncthing(self):
+        self.__log(1, 'stopping syncthing process...')
         if self.syncthing_proc:
             self.syncthing_proc.terminate()
             self.syncthing_proc.wait()
             self.syncthing_proc = None
+            self.__log(1, 'syncthing stopped')
             return True
+        self.__log(1, 'syncthing was not running')
         return False
 
     def syncthing_running(self):
@@ -1192,7 +1282,10 @@ class SyncthingHandler(ServerComponent):
             try:
                 rep = requester.urlopen(req)
                 break
-            except requester.URLError as e:  # assume syncthing is not yet ready
+            except requester.URLError as e:
+                if not isinstance(e.reason, ConnectionRefusedError):
+                    raise
+                # assume syncthing is not yet ready
                 if self.syncthing_proc.poll() is not None:
                     raise SyncthingNotReadyError()
                 time.sleep(1)
@@ -1210,7 +1303,10 @@ class SyncthingHandler(ServerComponent):
             try:
                 rep = requester.urlopen(req)
                 break
-            except requester.URLError as e:  # assume syncthing is not yet ready
+            except requester.URLError as e:
+                if not isinstance(e.reason, ConnectionRefusedError):
+                    raise
+                # assume syncthing is not yet ready
                 if self.syncthing_proc.poll() is not None:
                     raise SyncthingNotReadyError()
                 time.sleep(1)
