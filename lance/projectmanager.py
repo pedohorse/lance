@@ -10,7 +10,7 @@ import random
 import copy
 
 from .servercomponent import ServerComponent
-from .lance_utils import async_method
+from .lance_utils import async_method, async_method_queueonly
 from .logger import get_logger
 
 from . import syncthinghandler
@@ -100,6 +100,8 @@ class User:
         self.__readableName = mdata['name']
         self.__deviceids = set(mdata['deviceids'])
         self.__deviceids_tuple = None
+        self.__access_shotids = set(mdata['access'])
+        self.__access_shotids_tuple = None
 
     def id(self):
         return self.__id
@@ -121,6 +123,19 @@ class User:
             return
         self.__deviceids.remove(did)
         self.__deviceids_tuple = None
+
+    def available_shotpartids(self):
+        if self.__access_shotids_tuple is None:
+            self.__access_shotids_tuple = tuple(self.__access_shotids)
+        return self.__access_shotids_tuple
+
+    def add_shotpartid(self, shotpartid):
+        self.__access_shotids.add(shotpartid)
+        self.__access_shotids_tuple = None
+
+    def remove_shotpartid(self, shotpartid):
+        self.__access_shotids.remove(shotpartid)
+        self.__access_shotids_tuple = None
 
 
 class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface):
@@ -149,56 +164,66 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         self.__projectSettingsFolder = None
         self.__shots = {}  # type: Dict[str, Set[ShotPart]]
         self.__users = None
+        self.__configInSync = False
+
         self._server.eventQueueEater.add_event_processor(self)
 
     def run(self):
         super(ProjectManager, self).run()
-        #just add a cleanup event after default run has exited
+        # just add a cleanup event after default run has exited
         self._server.eventQueueEater.remove_event_provessor(self)
 
     # Event processor methods
+    @async_method_queueonly
     def add_event(self, event):
-        if isinstance(event, syncthinghandler.FoldersAddedEvent):  # This folders may be duplicated if rescanConfiguration
-            for folder in event.folders():
-                if '__ProjectManager_data__' not in folder.metadata():
-                    continue
-                metadata = folder.metadata()['__ProjectManager_data__']
-                if metadata['project'] != self.__project:
-                    continue
+        if not self.__configInSync:
+            if isinstance(event, syncthinghandler.ConfigSyncChangedEvent):
+                self.__configInSync = event.in_sync()
+                if self.__configInSync:
+                    self.__rescanConfiguration()
+                return
+        else:  # config is in sync
+            if isinstance(event, syncthinghandler.FoldersAddedEvent):  # This folders may be duplicated if rescanConfiguration
+                for folder in event.folders():
+                    if '__ProjectManager_data__' not in folder.metadata():
+                        continue
+                    metadata = folder.metadata()['__ProjectManager_data__']
+                    if metadata['project'] != self.__project:
+                        continue
 
-                if folder.id() in (x.id() for x in self.__shots[metadata['shot']]):
-                    log(1, 'addFolderEvent: shot part is present: %s' % folder.id())
-                    continue
+                    if folder.id() in (x.id() for x in self.__shots[metadata['shot']]):
+                        log(1, 'addFolderEvent: shot part is present: %s' % folder.id())
+                        continue
 
-                self.__shots[metadata['shot']].add(ShotPart(folder))
-        elif isinstance(event, syncthinghandler.FoldersChangedEvent):
-            for folder in event.folders():
-                if '__ProjectManager_data__' not in folder.metadata():
-                    continue
-                metadata = folder.metadata()['__ProjectManager_data__']
-                if metadata['project'] != self.__project:
-                    continue
+                    self.__shots[metadata['shot']].add(ShotPart(folder))
+            elif isinstance(event, syncthinghandler.FoldersChangedEvent):
+                for folder in event.folders():
+                    if '__ProjectManager_data__' not in folder.metadata():
+                        continue
+                    metadata = folder.metadata()['__ProjectManager_data__']
+                    if metadata['project'] != self.__project:
+                        continue
 
-                for shotpart in self.__shots[metadata['shot']]:
-                    if shotpart.id() == folder.id():
-                        shotpart.update_folder(folder)
-                        break
-                else:
-                    log(3, 'shotpart update received, shotpart does not exist %s' % folder.id())
-        elif isinstance(event, syncthinghandler.FoldersVolatileDataChangedEvent):  # TODO: treat this event better
-            for folder in event.folders():
-                if '__ProjectManager_data__' not in folder.metadata():
-                    continue
-                metadata = folder.metadata()['__ProjectManager_data__']
-                if metadata['project'] != self.__project:
-                    continue
+                    for shotpart in self.__shots[metadata['shot']]:
+                        if shotpart.id() == folder.id():
+                            shotpart.update_folder(folder)
+                            break
+                    else:
+                        log(3, 'shotpart update received, shotpart does not exist %s' % folder.id())
+            elif isinstance(event, syncthinghandler.FoldersVolatileDataChangedEvent):  # TODO: treat this event better
+                for folder in event.folders():
+                    if '__ProjectManager_data__' not in folder.metadata():
+                        continue
+                    metadata = folder.metadata()['__ProjectManager_data__']
+                    if metadata['project'] != self.__project:
+                        continue
 
-                for shotpart in self.__shots[metadata['shot']]:
-                    if shotpart.id() == folder.id():
-                        shotpart.update_folder(folder)
-                        break
-                else:
-                    log(3, 'shotpart volatile update received, shotpart does not exist %s' % folder.id())
+                    for shotpart in self.__shots[metadata['shot']]:
+                        if shotpart.id() == folder.id():
+                            shotpart.update_folder(folder)
+                            break
+                    else:
+                        log(3, 'shotpart volatile update received, shotpart does not exist %s' % folder.id())
 
     @classmethod
     def is_init_event(cls, event):
@@ -214,7 +239,7 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         except Exception as e:
             raise ConfigurationInconsistentError('syncthing returned %s' % repr(e))
 
-        oldshotconfigfolder = self.__projectSettingsFolder
+        oldprojectconfigfolder = self.__projectSettingsFolder
         oldshots = self.__shots
         oldusers = self.__users
         self.__shots = {}
@@ -222,47 +247,75 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         allshotparts = {}  # type: Dict[str, ShotPart]
         self.__projectSettingsFolder = None
 
-        # load project folders
-        for fid, folder in folders.items():
-            fmeta = folder.metadata()
-            if '__ProjectManager_data__' not in fmeta:
-                continue
-            pm_metadata = fmeta['__ProjectManager_data__']
-            if pm_metadata['project'] != self.__project:
-                continue
-
-            if pm_metadata['type'] == 'server.configuration':
-                self.__projectSettingsFolder = folder
-            elif pm_metadata['type'] == 'shotpart':
-                shotpart = ShotPart(folder)
-                allshotparts[shotpart.id()] = shotpart
-                shotid = pm_metadata['shot']
-                if shotid not in self.__shots:
-                    self.__shots[shotid] = set()
-                self.__shots[shotid].add(shotpart)
-
-        if self.__projectSettingsFolder is None:
-            # maybe syncthing handler is still in sync, so we will wait for it
-
-        # load users
-        configpath = self.__projectSettingsFolder.path()
-        users = os.listdir(os.path.join(configpath, 'users'))
-        for username in users:
-            devids = os.listdir(os.path.join(configpath, 'users', username, 'devices'))
-            with open(os.path.join(configpath, 'users', username, 'attribs'), 'r') as f:
-                userdata = json.load(f)
-            userdata['deviceids'] = devids
-            user = User(userdata)
-            self.__users[user.id()] = user
-
-            shotpartids = os.listdir(os.path.join(configpath, 'users', username, 'access'))
-            for shotpartid in shotpartids:
-                if shotpartid not in allshotparts:
-                    log(1, 'shotpart %s is not part of this server' % shotpartid)
+        if self.__sthandler._isServer():  # we are the server
+            # load project folders
+            for fid, folder in folders.items():
+                fmeta = folder.metadata()
+                if '__ProjectManager_data__' not in fmeta:
                     continue
-                allshotparts[shotpartid].add_user(username)
+                pm_metadata = fmeta['__ProjectManager_data__']
+                if pm_metadata['project'] != self.__project:
+                    continue
 
-        configchanged = self.__shots != oldshots or self.__users != oldusers
+                if pm_metadata['type'] == 'server.configuration':
+                    self.__projectSettingsFolder = folder
+                elif pm_metadata['type'] == 'shotpart':
+                    shotpart = ShotPart(folder)
+                    allshotparts[shotpart.id()] = shotpart
+                    shotid = pm_metadata['shot']
+                    if shotid not in self.__shots:
+                        self.__shots[shotid] = set()
+                    self.__shots[shotid].add(shotpart)
+
+            if self.__projectSettingsFolder is None:
+                # maybe syncthing handler is still in sync, so we will wait for it
+                # so we wait for flodersaddedevent
+                pass
+            else:
+                # load users
+                configpath = self.__projectSettingsFolder.path()
+                try:
+                    with open(os.path.join(configpath, 'config.cfg'), 'r') as f:
+                        config = json.load(f)
+                except:
+                    log(3, 'config loading error - might be not in sync, might be corrupted')
+                else:
+                    users = config.get('users', [])
+                    for userid, userdata in users.items():
+                        try:
+                            user = User(userdata)
+                        except:  # malformed user data, skipping
+                            continue
+                        if userid != user.id():  # sanity check
+                            continue
+                        self.__users[user.id()] = user
+
+                        for shotpartid in user.available_shotpartids():
+                            if shotpartid not in allshotparts:
+                                log(1, 'shotpart %s is not part of this server' % shotpartid)
+                                continue
+                            allshotparts[shotpartid].add_user(userid)
+
+            configchanged = self.__shots != oldshots or self.__users != oldusers or oldprojectconfigfolder != self.__projectSettingsFolder
+
+            shotpartidToDevidset = {}  # type: Dict[str, Set[str]]
+            for shotpartid, shotpart in allshotparts.items():
+                allShotpartDevids = set()
+                for userid in shotpart.users():
+                    allShotpartDevids.update(self.__users[userid].device_ids())
+                shotpartidToDevidset[shotpartid] = allShotpartDevids
+
+            allDevids = set()
+            for devidset in shotpartidToDevidset.values():
+                allDevids.update(devidset)
+
+            self.__sthandler.set_devices(allDevids)  # note that sthandler will only make changes if devlists do not match
+
+            for shotpartid, allShotpartDevids in shotpartidToDevidset.items():
+                self.__sthandler.set_folder_devices(shotpartid, allShotpartDevids)
+
+        else:  # not server
+            configchanged = self.__shots != oldshots
 
         if configchanged:
             if self.__shots != oldshots:
