@@ -156,7 +156,7 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
             projectnames.add(pm_metadata['project'])
         return projectnames
 
-    def __init__(self, server, project):
+    def __init__(self, server, project: str):
         super(ProjectManager, self).__init__(server)
         self.__sthandler = server.syncthingHandler  # type: syncthinghandler.SyncthingHandler
         # TODO: detect required components in a more dynamic way
@@ -350,6 +350,7 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         self.__sthandler.add_folder(path, shotname, devList=None, metadata=meta, overrideFid=fid)
         # now we should wait for sthandler to send addfolder event for our fid
 
+    # Interface
     @async_method
     def add_shot(self, shotname: str, shotid: str, path: str):
         return self.__interface_addShot(shotname, shotid, path)
@@ -366,3 +367,14 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         elif isinstance(shotpart, str):
             return self.__sthandler.remove_folder(shotpart)
         raise AttributeError('attrib shotpart of wrong type: %s' % repr(type(shotpart)))
+
+    @async_method
+    def get_shots(self):
+        return copy.deepcopy(self.__shots)
+
+    def project_name(self):
+        return self.__project
+
+    @async_method
+    def rescan_configuration(self):
+        return self.__rescanConfiguration()
