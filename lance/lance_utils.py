@@ -66,10 +66,19 @@ def async_method(func):
         if self.isAlive():  # if self is a running thread - enqueue method for execution
             self._method_invoke_Queue.put((func, asyncres, args, kwargs))
         else:  # if self is not running - execute now
-            try:
+            try:    #TODO: make sure this can never be executed while object's constructor is being executed!
                 asyncres._setDone(func(self, *args, **kwargs))
             except Exception as e:
                 asyncres._setException(e)
+        return asyncres
+
+    return wrapper
+
+
+def async_method_queueonly(func):
+    def wrapper(self, *args, **kwargs):
+        asyncres = StoppableThread.AsyncResult()
+        self._method_invoke_Queue.put((func, asyncres, args, kwargs))
         return asyncres
 
     return wrapper
