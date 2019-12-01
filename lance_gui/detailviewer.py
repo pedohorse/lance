@@ -257,10 +257,13 @@ class DetailViewer(QMainWindow):
                 self.__deviceModel.clear_elements()
             self.__server = server
             if self.__server is not None:
-                for devid, device in self.__server.syncthingHandler.get_devices().result().items():
-                    self.__deviceModel.add_element(device)
-                for fid, folder in self.__server.syncthingHandler.get_folders().result().items():
-                    self.__folderModel.add_element(folder)
+                try:
+                    for devid, device in self.__server.syncthingHandler.get_devices().result().items():
+                        self.__deviceModel.add_element(device)
+                    for fid, folder in self.__server.syncthingHandler.get_folders().result().items():
+                        self.__folderModel.add_element(folder)
+                except sth.ConfigNotInSyncError:
+                    pass
                 self.__server.eventQueueEater.add_event_processor(self.__deviceEventCatched)
                 self.__server.eventQueueEater.add_event_processor(self.__folderEventCatched)
         finally:
