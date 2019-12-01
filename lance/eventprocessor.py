@@ -1,6 +1,6 @@
 import queue
 from . import lance_utils
-from .lance_utils import async_method
+from .lance_utils import async_method_queueonly
 
 
 class BadEventProcessorEvent(RuntimeError):
@@ -36,7 +36,7 @@ class BaseEventProcessor(BaseEventProcessorInterface, lance_utils.StoppableThrea
     def __init__(self):
         super(BaseEventProcessor, self).__init__()
 
-    @async_method
+    @async_method_queueonly
     def add_event(self, event):
         """
         note that there is no dedicated event queue - allevents go into async methods queue
