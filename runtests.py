@@ -26,12 +26,24 @@ if __name__ == '__main__':
             TestClass().run()
             results[TestClass] = {'passed': True, 'time': time.time() - _starttime}
         except Exception as e:
-            results[TestClass] = {'passed': False, 'time': time.time() - _starttime, 'error': {'traceback_string': ''.join(traceback.format_exc()), 'exeption': e}}
+            traceback_string = ''.join(traceback.format_exc())
+            results[TestClass] = {'passed': False, 'time': time.time() - _starttime, 'error': {'traceback_string': traceback_string, 'exeption': e}}
+            print('test %s:' % TestClass.__name__)
+            print(repr(e))
+            print(traceback_string)
+            print('\n-------------------------------------\n')
 
     print('\n\nAll tests finished!\n\n')
+    failedTests = []
     for TestClass, result in results.items():
         print('{passed} "{classname}" in {time:.3f}'.format(classname=TestClass.__name__, passed='Passed' if result['passed'] else 'Failed', time=result.get('time', -1)))
         if not result['passed']:
-            print(result['error']['traceback_string'])
-            print('\n')
+            failedTests.append((TestClass, result))
+
+    if len(failedTests) > 0:
+        print("\n\nfailed tests:\n")
+    for TestClass, result in failedTests:
+        print('test %s:' % TestClass.__name__)
+        print(result['error']['traceback_string'])
+        print('\n-------------------------------------\n')
     print('\n\n')
