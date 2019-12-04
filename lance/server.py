@@ -1,9 +1,11 @@
 import os
 import queue
+import random
+import string
 from . import lance_utils
 from . import logger
 
-from .syncthinghandler import SyncthingHandler, ConfigSyncChangedEvent
+from .syncthinghandler import SyncthingHandler, ConfigSyncChangedEvent, FoldersSyncedEvent
 from .eventqueueeater import EventQueueEater
 from .eventprocessor import BaseEventProcessor
 from .projectmanager import ProjectManager
@@ -19,7 +21,6 @@ class Server(object):
     class ProjectManagerHandler(BaseEventProcessor):
         def __init__(self, server):
             super(Server.ProjectManagerHandler, self).__init__()
-            self.__knownProjects = set()
             self.__server = server
             self.__log = logger.get_logger('Project Manager Handler')
 
@@ -34,7 +35,7 @@ class Server(object):
             Note that though you can dynamically change expected event types, since event processor and event supplier work in separate threads - you may miss events while changing states here
             So better enum here all the eveens types required for all the sates of your processor, unless you do not care to miss some events
             """
-            return isinstance(event, ConfigSyncChangedEvent)
+            return isinstance(event, FoldersSyncedEvent) or isinstance(event, ConfigSyncChangedEvent)
 
         def _processEvent(self, event):
             """
@@ -44,16 +45,32 @@ class Server(object):
             :param event:
             :return:
             """
-            if isinstance(event, ConfigSyncChangedEvent):
+            if isinstance(event, FoldersSyncedEvent):
+                # need to check if new projects appeared, and if so - create new project managers
+                self.__log(0, 'folder synced event received')
+                for folder in event.folders():
+                    if folder.metadata().get('__ProjectManager_data__', {}).get('type', '') != 'server.configuration':
+                        continue
+                    possibleproject = folder.metadata().get('__ProjectManager_data__', {}).get('project', None)
+                    if possibleproject is None or possibleproject in self.__server.projectManagers:
+                        continue
+                    self.__log(1, 'new project discovered! %s' % possibleproject)
+                    newpm = ProjectManager(self.__server, possibleproject)
+                    self.__server.projectManagers[possibleproject] = newpm
+                    self.__log(1, 'starting new project manager')
+                    newpm.start()
+                    newpm.rescan_configuration()
+
+            elif isinstance(event, ConfigSyncChangedEvent):
                 # need to check if new projects appeared, and if so - create new project managers
                 self.__log(0, 'config synced event received')
                 possibleprojects = ProjectManager.get_project_names(self.__server)
                 for possibleproject in possibleprojects:
-                    if possibleproject in self.__knownProjects:
+                    if possibleproject in self.__server.projectManagers:
                         continue
                     self.__log(1, 'new project discovered! %s' % possibleproject)
                     newpm = ProjectManager(self.__server, possibleproject)
-                    self.__server.projectManagers.append(newpm)
+                    self.__server.projectManagers[possibleproject] = newpm
                     self.__log(1, 'starting new project manager')
                     newpm.start()
                     newpm.rescan_configuration()
@@ -77,19 +94,31 @@ class Server(object):
         self.eventQueueEater = EventQueueEater(self)
         self._projectManagerHandler = Server.ProjectManagerHandler(self)
         self.eventQueueEater.add_event_processor(self._projectManagerHandler)
-        self.projectManagers = []  # type: List[ProjectManager]
+        self.projectManagers = {}  # type: Dict[str, ProjectManager]
 
     def start(self):
         self.eventQueueEater.start()
         self.syncthingHandler.start()
-        self._projectManagerHandler.start()
 
     def stop(self):
+        self.eventQueueEater.stop()
         self._projectManagerHandler.stop()
-        for pm in self.projectManagers:
+        for pm in self.projectManagers.values():
             pm.stop()
         self.syncthingHandler.stop()
-        self.eventQueueEater.stop()
+
+    def add_project(self, projectname):
+        if projectname in self.projectManagers:
+            raise ValueError('project with name %s already exists' % projectname)
+        safename = "".join(c for c in projectname if c.isalnum() or c in ('.', '_'))
+        fid = "folder-{project}-configuration-{randstr}".format(project=safename,  randstr=''.join(random.choice(string.ascii_lowercase) for _ in range(16)))
+        prjmeta = {'__ProjectManager_data__': {'type': 'server.configuration',
+                                               'project': projectname}}
+        fold_path = os.path.join(self.config['data_root'], 'project_%s_configuration' % safename)
+        os.makedirs(fold_path, exist_ok=True)
+        with open(os.path.join(fold_path, 'config.cfg'), 'w') as f:
+            f.write('{}')
+        return self.syncthingHandler.add_folder(fold_path, 'project %s configuration' % projectname, devList=None, metadata=prjmeta, overrideFid=fid)
 
 
 if __name__ == '__main__':

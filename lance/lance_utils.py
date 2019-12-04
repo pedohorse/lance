@@ -60,28 +60,32 @@ class SyncthingError(RuntimeError):
     pass
 
 
-def async_method(func):
-    def wrapper(self, *args, **kwargs):
-        asyncres = StoppableThread.AsyncResult()
-        if self.isAlive():  # if self is a running thread - enqueue method for execution
+def async_method(raise_while_invoking=False):
+    def inner_decor(func):
+        def wrapper(self, *args, **kwargs):
+            asyncres = StoppableThread.AsyncResult(raise_while_invoking)
+            if self.isAlive():  # if self is a running thread - enqueue method for execution
+                self._method_invoke_Queue.put((func, asyncres, args, kwargs))
+            else:  # if self is not running - execute now
+                try:    #TODO: make sure this can never be executed while object's constructor is being executed!
+                    asyncres._setDone(func(self, *args, **kwargs))
+                except Exception as e:
+                    asyncres._setException(e)
+            return asyncres
+
+        return wrapper
+    return inner_decor
+
+
+def async_method_queueonly(raise_while_invoking=False):
+    def inner_decor(func):
+        def wrapper(self, *args, **kwargs):
+            asyncres = StoppableThread.AsyncResult(raise_while_invoking)
             self._method_invoke_Queue.put((func, asyncres, args, kwargs))
-        else:  # if self is not running - execute now
-            try:    #TODO: make sure this can never be executed while object's constructor is being executed!
-                asyncres._setDone(func(self, *args, **kwargs))
-            except Exception as e:
-                asyncres._setException(e)
-        return asyncres
+            return asyncres
 
-    return wrapper
-
-
-def async_method_queueonly(func):
-    def wrapper(self, *args, **kwargs):
-        asyncres = StoppableThread.AsyncResult()
-        self._method_invoke_Queue.put((func, asyncres, args, kwargs))
-        return asyncres
-
-    return wrapper
+        return wrapper
+    return inner_decor
 
 
 class StoppableThread(threading.Thread):
@@ -89,18 +93,21 @@ class StoppableThread(threading.Thread):
         pass
 
     class AsyncResult(object):
-        def __init__(self):
+        def __init__(self, raise_straightaway=False):
             self.__done = threading.Event()
             self.__result = None
             self.__exception = None
             self.__callbackLock = threading.Lock()
             self.__callback = None
+            self.__raiseImmediately = raise_straightaway
 
         # these are called from the worker thread
         def _setException(self, ex):
             self.__exception = ex
             self.__result = None  # should not be needed, but hey
             self.__done.set()
+            if self.__raiseImmediately:
+                raise ex
 
         def _setDone(self, result=None):
             with self.__callbackLock:

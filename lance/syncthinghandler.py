@@ -4,6 +4,7 @@ import shutil
 import errno
 import copy
 import subprocess
+import threading
 import urllib.request as requester
 import json
 import time
@@ -319,6 +320,9 @@ class DevicesConfigurationEvent(ConfigurationEvent):
     def devices(self):
         return self.__devices
 
+    def __repr__(self):
+        return '<{typename}>: devs=({names})'.format(typename=type(self).__name__, names=', '.join(map(lambda x: x.name(), self.__devices)))
+
 
 class DevicesAddedEvent(DevicesConfigurationEvent):
     pass
@@ -344,6 +348,9 @@ class FoldersConfigurationEvent(ConfigurationEvent):
     def folders(self):
         return self.__folders
 
+    def __repr__(self):
+        return '<{typename}>: ({folderslist})'.format(typename=type(self).__name__, folderslist=', '.join(map(lambda x: x.label(), self.__folders)))
+
 
 class FoldersAddedEvent(FoldersConfigurationEvent):
     pass
@@ -353,11 +360,15 @@ class FoldersRemovedEvent(FoldersConfigurationEvent):
     pass
 
 
-class FoldersChangedEvent(FoldersConfigurationEvent):
+class FoldersConfigurationChangedEvent(FoldersConfigurationEvent):
     pass
 
 
 class FoldersVolatileDataChangedEvent(FoldersConfigurationEvent):
+    pass
+
+
+class FoldersSyncedEvent(FoldersConfigurationEvent):
     pass
 
 
@@ -371,6 +382,9 @@ class ConfigSyncChangedEvent(BaseEvent):
 
     def progress(self) -> float:
         return 1 if self.__insync else 0
+
+    def __repr__(self):
+        return '<{typename}: sync={sync}>'.format(typename=type(self).__name__, sync=repr(self.__insync))
 
 
 #  MAIN GUY
@@ -409,6 +423,7 @@ class SyncthingHandler(ServerComponent):
         self.__log = get_logger(self.__class__.__name__)
         self.__log.min_log_level = 1
 
+        self.__myid_lock = threading.Lock()
         self.syncthing_bin = r'syncthing'
         self.data_root = server.config['data_root']  # os.path.join(os.path.split(os.path.abspath(__file__))[0], r'data')
         self.config_root = server.config['config_root']  # os.path.join(os.path.split(os.path.abspath(__file__))[0], r'config')
@@ -436,7 +451,6 @@ class SyncthingHandler(ServerComponent):
         self.__log = get_logger('%s %s' % (self.myId()[:5], self.__class__.__name__))
         self.__log.min_log_level = 1
 
-
     def start(self):
         super(SyncthingHandler, self).start()
         self.__start_syncthing()
@@ -446,37 +460,42 @@ class SyncthingHandler(ServerComponent):
         self.__stop_syncthing()
 
     def myId(self):
-        if self.__myid is not None:
-            return self.__myid
-        proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-browser', '-no-restart', '-device-id'], stdout=subprocess.PIPE)
-        res = proc.communicate()[0]
-        if res.endswith(b'\n'):
-            res = res[:-1]
-        res = res.decode()
-        if proc.wait() != 0:
-            raise NoInitialConfiguration()
-        self.__myid = res
+        with self.__myid_lock:
+            if self.__myid is not None:
+                return self.__myid
+            proc = subprocess.Popen([self.syncthing_bin, '-home={home}'.format(home=self.config_root), '-no-browser', '-no-restart', '-device-id'], stdout=subprocess.PIPE)
+            res = proc.communicate()[0]
+            if res.endswith(b'\n'):
+                res = res[:-1]
+            res = res.decode()
+            if proc.wait() != 0:
+                raise NoInitialConfiguration()
+            self.__myid = res
         return res
 
     def _isServer(self):
         return self.myId() in self.__servers
+
+    def _enqueueEvent(self, event):
+        self.__log(1, 'enqueuing event: %s' % repr(event))
+        super(SyncthingHandler, self)._enqueueEvent(event)
 
     def _runLoopLoad(self):
         while True:
             # TODO: check for device/folder connection events to check for blacklisted, just in case
             if self.syncthing_proc is not None and self.__isValidState:  # TODO: skip this for some set time to wait for events to accumulate
                 try:
-                    stevents = self.__get('/rest/events', since=self._last_event_id, timeout=1)
+                    stevents = self.__get('/rest/events', since=self._last_event_id, timeout=2)  # TODO: get events in async way
                 except:
                     time.sleep(2)
                     yield
                     continue
-                event = None
+
                 self.__log(0, "syncthing event", stevents)
                 current_session = hash(self.syncthing_proc)
                 # loop through rest events and pack them into lance events
                 if stevents is None:
-                    time.sleep(2)
+                    #time.sleep(2)  # no need to sleep - __get has timeout
                     yield
                     continue
 
@@ -485,7 +504,11 @@ class SyncthingHandler(ServerComponent):
 
                 for stevent in stevents:
                     # filter and pack events into our wrapper
-                    self.__log(1, 'event type "%s"' % stevent['type'])
+                    #just fancy logging:
+                    logtext = 'event type "%s"' % stevent['type']
+                    if stevent['type'] == 'FolderSummary':
+                        logtext += ' %s: %d' % (stevent['data']['folder'], stevent['data']['summary']['needTotalItems'])
+                    self.__log(1, logtext)
 
                     if stevent['type'] == 'StartupComplete':
                         # syncthing loaded. either first load, or syncthing restarted after configuration save
@@ -503,7 +526,7 @@ class SyncthingHandler(ServerComponent):
                                     except Exception as e:
                                         self.__log(2, 'config reload failed cuz of %s probably being updated by syncthing' % repr(e))
                                         self.__configInSync = False
-                                event = ConfigSyncChangedEvent(self.__configInSync)
+                                self._enqueueEvent(ConfigSyncChangedEvent(self.__configInSync))
                         except requester.HTTPError as e:
                             if e.code == 404:  # looks like syncthing config was not saved. how did this happen??
                                 self.__log(4, 'syncthing config was not properly initialized')
@@ -517,7 +540,7 @@ class SyncthingHandler(ServerComponent):
                     # Config sincronization event processing
                     elif self.__configInSync and stevent['type'] == 'ItemStarted' and stevent['data']['folder'] == self.get_config_folder().fid():  # need to send him the configuration
                         self.__configInSync = False
-                        event = ConfigSyncChangedEvent(False)
+                        self._enqueueEvent(ConfigSyncChangedEvent(False))
                     elif not self.__configInSync and stevent['type'] == 'FolderSummary' and stevent['data']['folder'] == self.get_config_folder().fid():
                         data = stevent['data']
                         if data['summary']['needTotalItems'] == 0:
@@ -528,7 +551,8 @@ class SyncthingHandler(ServerComponent):
                             except Exception as e:
                                 self.__log(2, 'config reload failed cuz of %s. probably being updated by syncthing' % repr(e))
                                 self.__configInSync = False
-                            event = ConfigSyncChangedEvent(True)
+                            else:
+                                self._enqueueEvent(ConfigSyncChangedEvent(True))
 
                     # Folder Statue event
                     elif stevent['type'] == 'FolderSummary':
@@ -536,7 +560,10 @@ class SyncthingHandler(ServerComponent):
                         if fid in self.__folders:
                             self.__folders[fid]._updateVolatileData(stevent['data'])
                             self.__log(1, repr(self.__folders[fid].volatile_data()))
-                            event = FoldersVolatileDataChangedEvent((copy.deepcopy(self.__folders[fid]),), 'syncthing::event')
+                            fcopy = copy.deepcopy(self.__folders[fid])
+                            self._enqueueEvent(FoldersVolatileDataChangedEvent((fcopy,), 'syncthing::event'))
+                            if stevent['data']['summary']['needTotalItems'] == 0:
+                                self._enqueueEvent(FoldersSyncedEvent((fcopy,), 'syncthing::event'))
 
                     # Device Status event
                     elif stevent['type'] == 'DeviceConnected':
@@ -545,33 +572,28 @@ class SyncthingHandler(ServerComponent):
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__devices[did]._update_volatile_data({'connected': True, 'error': None})
                             self.__log(1, repr(self.__devices[did].volatile_data()))
-                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event')
+                            self._enqueueEvent(DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event'))
                     elif stevent['type'] == 'DeviceDisconnected':
                         did = stevent['data']['id']
                         if did in self.__devices:
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__devices[did]._update_volatile_data({'connected': False})
                             self.__log(1, repr(self.__devices[did].volatile_data()))
-                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event')
+                            self._enqueueEvent(DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event'))
                     elif stevent['type'] == 'DeviceDiscovered':
                         did = stevent['data']['device']
                         if did in self.__devices:
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__log(1, repr(self.__devices[did].volatile_data()))
-                            event = DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event')
+                            self._enqueueEvent(DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event'))
                     #elif stevent['type'] == 'ItemFinished':
                     #    data = stevent['data']
                     #    if data['folder'] in self.get_config_folder().fid():
                     #        event = ControlEvent(stevent)
                     else:  # General event
-                        event = SyncthingEvent(stevent)
+                        self._enqueueEvent(SyncthingEvent(stevent))
 
-                    if event is not None:
-                        self.__log(1, "sending event %s" % repr(event))
-                        self._enqueueEvent(event)
-
-
-            time.sleep(1)
+            #time.sleep(1)
             yield
 
     def __generateInitialConfig(self):
@@ -643,7 +665,7 @@ class SyncthingHandler(ServerComponent):
     def config_synced(self):
         return self.__configInSync  # should be python-atomic
 
-    @async_method
+    @async_method()
     def is_server(self):
         """
         if config not in sync - this will return last valid configuration
@@ -651,7 +673,7 @@ class SyncthingHandler(ServerComponent):
         """
         return self._isServer()
 
-    @async_method
+    @async_method()
     def get_devices(self):
         """
         if config not in sync - this will return last valid configuration
@@ -659,7 +681,7 @@ class SyncthingHandler(ServerComponent):
         """
         return copy.deepcopy(self.__devices)
 
-    @async_method
+    @async_method()
     def get_servers(self):
         """
         if config not in sync - this will return last valid configuration
@@ -667,7 +689,7 @@ class SyncthingHandler(ServerComponent):
         """
         return copy.deepcopy(self.__servers)
 
-    @async_method
+    @async_method()
     def get_folders(self):
         """
         if config not in sync - this will return last valid configuration
@@ -675,31 +697,31 @@ class SyncthingHandler(ServerComponent):
         """
         return copy.deepcopy(self.__folders)
 
-    @async_method
+    @async_method()
     def add_server(self, deviceid: str):
         return self.__interface_addServer(deviceid)
 
-    @async_method
+    @async_method()
     def add_device(self, deviceid: str, name: Optional[str] = None):
         return self.__interface_addDevice(deviceid, name)
 
-    @async_method
+    @async_method()
     def remove_device(self, deviceid: str):
         return self.__interface_removeDevice(deviceid)
 
-    @async_method
+    @async_method()
     def set_devices(self, dids: Iterable[str]):
         return self.__interface_setDevices(dids)
 
-    @async_method
+    @async_method()
     def add_folder(self, folderPath, label, devList=None, metadata=None, overrideFid=None):
         return self.__interface_addFolder(folderPath, label, devList, metadata, overrideFid)
 
-    @async_method
+    @async_method()
     def remove_folder(self, folderId):
         return self.__interface_removeFolder(folderId)
 
-    @async_method
+    @async_method()
     def add_device_to_folder(self, fid, did):
         if not self._isServer():
             raise RuntimeError('device list is provided by server')
@@ -718,9 +740,9 @@ class SyncthingHandler(ServerComponent):
             self.__save_st_config()
             for dev in self.__folders[fid].devices():
                 self.__save_device_configuration(dev)
-            self._enqueueEvent(FoldersChangedEvent((copy.deepcopy(self.__folders[fid]),), 'external::add_device_to_folder'))
+            self._enqueueEvent(FoldersConfigurationChangedEvent((copy.deepcopy(self.__folders[fid]),), 'external::add_device_to_folder'))
 
-    @async_method
+    @async_method()
     def remove_device_from_folder(self, fid, did):
         if did not in self.__devices:
             raise RuntimeError('device %s does not belong to this server' % did)
@@ -738,9 +760,9 @@ class SyncthingHandler(ServerComponent):
             for dev in self.__folders[fid].devices():
                 self.__save_device_configuration(dev)
             self.__save_device_configuration(did)
-            self._enqueueEvent(FoldersChangedEvent((copy.deepcopy(self.__folders[fid]),), 'external::remove_device_from_folder'))
+            self._enqueueEvent(FoldersConfigurationChangedEvent((copy.deepcopy(self.__folders[fid]),), 'external::remove_device_from_folder'))
 
-    @async_method
+    @async_method()
     def set_folder_devices(self, fid, dids: Iterable):
         if not self._isServer():
             raise RuntimeError('device list is provided by server')
@@ -772,17 +794,17 @@ class SyncthingHandler(ServerComponent):
             self.__save_device_configuration(did)
         # not send events
         eventdata = (copy.deepcopy(self.__folders[fid]),)
-        self._enqueueEvent(FoldersChangedEvent(eventdata, 'external::set_folder_devices'))
+        self._enqueueEvent(FoldersConfigurationChangedEvent(eventdata, 'external::set_folder_devices'))
 
 
-    @async_method
+    @async_method()
     def set_server_secret(self, secret):  # TODO: hm.... need to figure out how to do this safely at runtime
         assert isinstance(secret, str), 'secret must be a str'
         self.__server_secret = secret
         self.__save_configuration()
         self.__reload_configuration()
 
-    @async_method
+    @async_method()
     def set_device_name(self, did, name):
         if not self._isServer():
             raise RuntimeError('only server can do that')
@@ -798,7 +820,7 @@ class SyncthingHandler(ServerComponent):
         self.__save_device_configuration(self.__devices[did])
         self._enqueueEvent(DevicesChangedEvent((copy.deepcopy(self.__devices[did]),), 'external::set_device_name'))
 
-    @async_method
+    @async_method()
     def reload_configuration(self):
         return self.__reload_configuration()
     # END INTERFACE
@@ -843,7 +865,7 @@ class SyncthingHandler(ServerComponent):
 
         # send events
         if len(folders_updated) > 0:
-            self._enqueueEvent(FoldersChangedEvent(folders_updated, 'external::remove_device'))  # note that those are copied folder objects
+            self._enqueueEvent(FoldersConfigurationChangedEvent(folders_updated, 'external::remove_device'))  # note that those are copied folder objects
         self._enqueueEvent(DevicesRemovedEvent([copy.deepcopy(remdevice)], 'external::remove_device'))  # TODO: since we delete it from server - deepcopy is excessive, no need to copy at all.... right? check it
 
     def __interface_setDevices(self, dids: Iterable[str]):
@@ -882,7 +904,7 @@ class SyncthingHandler(ServerComponent):
             del self.__devices[did]
 
         if len(folders_updated) > 0:
-            self._enqueueEvent(FoldersChangedEvent(folders_updated, 'external::set_devices'))  # note that those are copied folder objects
+            self._enqueueEvent(FoldersConfigurationChangedEvent(folders_updated, 'external::set_devices'))  # note that those are copied folder objects
         if len(devs_added_forevent) > 0:
             self._enqueueEvent(DevicesAddedEvent(devs_added_forevent, 'external::set_devices'))
         if len(devs_removed_forevent) > 0:
@@ -948,12 +970,19 @@ class SyncthingHandler(ServerComponent):
         if not self.__configInSync:
             raise ConfigNotInSyncError()
         assert isinstance(folderId, str), 'folderId must be str'
+        self.__log(1, 'removing folder %s' % folderId)
         if folderId not in self.__folders:
+            self.__log(2, 'folder %s does not exist' % folderId)
             return
 
         folder = self.__folders[folderId]
         del self.__folders[folderId]
 
+        self.__save_configuration()
+        self.__save_st_config()
+        for dev in folder.devices():
+            self.__save_device_configuration(dev)
+        # note that server does NOT delete folder from disc when folder is removed
         self._enqueueEvent(FoldersRemovedEvent((copy.deepcopy(folder),), 'external::remove_folder'))
 
     def __reload_configuration(self, use_bootstrap=True):
@@ -1063,7 +1092,7 @@ class SyncthingHandler(ServerComponent):
                 if newfolder.path() is None:
                     # TODO: add an option to control this, allow folders to stay without path
                     # TODO: ensure path does not exist already
-                    newfolder._setPath(os.path.join(self.data_root, newfolder.label()))
+                    newfolder._setPath(os.path.join(self.data_root, newfolder.label()))  #TODO: convert label to a valid filesystem filename !!!
 
                 if fid in oldfolders:
                     oldfolder = oldfolders[fid]
@@ -1136,7 +1165,7 @@ class SyncthingHandler(ServerComponent):
                 self._enqueueEvent(FoldersRemovedEvent(foldersremoved, 'reload_configuration'))
                 self.__log(1, 'foldersremoved event enqueued %s' % repr(foldersremoved))
             if len(foldersupdated) > 0:
-                self._enqueueEvent(FoldersChangedEvent(foldersupdated, 'reload_configuration'))
+                self._enqueueEvent(FoldersConfigurationChangedEvent(foldersupdated, 'reload_configuration'))
                 self.__log(1, 'foldersupdated event enqueued %s' % repr(foldersupdated))
             # check
             for fld in __debug_foldersupdated:
@@ -1306,6 +1335,9 @@ class SyncthingHandler(ServerComponent):
             #fid = 'server_configuration-%s' % hashlib.sha1(self.__server_secret.encode('UTF-8')).hexdigest()
             sconf = ET.SubElement(conf, 'folder', {'id': serverConfigFolder.fid(), 'label': 'server configuration', 'path': serverConfigFolder.path(), 'type': 'sendreceive'})
             ET.SubElement(sconf, 'maxConflicts').text = '0'
+            for server in self.__servers:
+                ET.SubElement(sconf, 'device', {'id': server})
+
             os.makedirs(serverConfigFolder.path(), exist_ok=True)
 
 
@@ -1499,11 +1531,11 @@ class SyncthingHandler(ServerComponent):
             raise SyncthingNotReadyError()
         return None  # json.loads(rep.read())
 
-    @async_method
+    @async_method()
     def get(self, path, **kwargs):
         return self.__get(path, **kwargs)
 
-    @async_method
+    @async_method()
     def post(self, path, data):
         return self.__post(path, data)
 
