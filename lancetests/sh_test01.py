@@ -1,34 +1,16 @@
-import sys
 import os
 import errno
 import time
 import random
 import string
-import threading
 
 from lance.server import Server
 from testbase import TestBase
-from lance_gui.detailviewer import DetailViewer
-
-from PySide2.QtWidgets import QApplication
 
 
-class AddRemoveFoldersTest_gui(TestBase):
-    def run(self):
-        self.error = None
-        self.qapp = QApplication(sys.argv)
-        self.wgt0 = DetailViewer()
-        self.wgt0.show()
-
-        testthread = threading.Thread(target=self.runthread)
-        testthread.start()
-        self.qapp.exec_()
-        if self.error is not None:
-            raise self.error
-
-    def runthread(self):
+class SH_AddRemoveFoldersTest(TestBase):
+    def testBody(self, logger):
         try:
-
             self.srv = Server(os.path.join(self.test_root_path(), 'srv', 'config'), os.path.join(self.test_root_path(), 'srv', 'data'))
             self.cl0 = Server(os.path.join(self.test_root_path(), 'cl0', 'config'), os.path.join(self.test_root_path(), 'cl0', 'data'))
             self.cl1 = Server(os.path.join(self.test_root_path(), 'cl1', 'config'), os.path.join(self.test_root_path(), 'cl1', 'data'))
@@ -62,19 +44,25 @@ class AddRemoveFoldersTest_gui(TestBase):
             self.cl0.syncthingHandler.add_server(srvid).result()
             self.cl1.syncthingHandler.add_server(srvid).result()
             self.cl2.syncthingHandler.add_server(srvid).result()
+            logger.print('srv cl0 cl1 cl2 initialized')
 
-            fidA = self.srv.syncthingHandler.add_folder(fpath0s, 'folder_A', [cl0id, cl1id]).result()
-            fidB = self.srv.syncthingHandler.add_folder(fpath1s, 'folder_B', [cl1id, cl2id]).result()
-            fidC = self.srv.syncthingHandler.add_folder(fpath2s, 'folder_C', [cl2id, cl0id]).result()
+            fidA = self.srv.syncthingHandler.add_folder(fpath0s, 'folder_A', [cl0id]).result()
+            fidB = self.srv.syncthingHandler.add_folder(fpath1s, 'folder_B', [cl1id]).result()
+            fidC = self.srv.syncthingHandler.add_folder(fpath2s, 'folder_C', [cl2id]).result()
+            logger.print('adding folders: folder_A<-cl0, folder_B<-cl1, folder_C<-cl2')
 
-            for i in range(3):
-                self.wgt0.set_server(self.cl0)  # This particular part might be not quite threadsafe,
+            for i in range(5):
+                logger.print('starting iteration %d' % i)
                 self.srv.start()
                 self.cl0.start()
                 self.cl1.start()
                 self.cl2.start()
+                logger.print('all servers/clients started')
 
+                logger.print('waiting 10s')
                 time.sleep(10)
+
+                logger.print('filling folders with random data')
                 s0 = 'f0 random information %s' % ''.join([random.choice(string.printable) for _ in range(16)])
                 s1 = 'f1 randomer informationes %s' % ''.join([random.choice(string.printable) for _ in range(16)])
                 s2 = 'f2 even randomer informationes %s' % ''.join([random.choice(string.printable) for _ in range(16)])
@@ -85,8 +73,10 @@ class AddRemoveFoldersTest_gui(TestBase):
                 with open(os.path.join(fpath2s, 'f2_test.txt'), 'w') as f:
                     f.write(s2)
 
-                time.sleep(15)
+                logger.print('waiting for 25s')
+                time.sleep(25)
 
+                logger.print('checking data on clients')
                 with open(os.path.join(fpath0s, 'f0_test.txt'), 'r') as f:
                     ss0 = f.read()
                 with open(os.path.join(fpath1s, 'f1_test.txt'), 'r') as f:
@@ -96,98 +86,57 @@ class AddRemoveFoldersTest_gui(TestBase):
 
                 with open(os.path.join(self.test_root_path(), 'cl0', 'data', 'folder_A', 'f0_test.txt'), 'r') as f:
                     assert ss0 == f.read(), 'c0 folder 0 contents mismatch. test failed. \n%s' % s0
-                with open(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_A', 'f0_test.txt'), 'r') as f:
-                    assert ss0 == f.read(), 'c1 folder 0 contents mismatch. test failed. \n%s' % s0
                 with open(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_B', 'f1_test.txt'), 'r') as f:
                     assert ss1 == f.read(), 'c1 folder 1 contents mismatch. test failed. \n%s' % s1
-                with open(os.path.join(self.test_root_path(), 'cl2', 'data', 'folder_B', 'f1_test.txt'), 'r') as f:
-                    assert ss1 == f.read(), 'c2 folder 1 contents mismatch. test failed. \n%s' % s1
                 with open(os.path.join(self.test_root_path(), 'cl2', 'data', 'folder_C', 'f2_test.txt'), 'r') as f:
                     assert ss2 == f.read(), 'c2 folder 2 contents mismatch. test failed. \n%s' % s2
-                with open(os.path.join(self.test_root_path(), 'cl0', 'data', 'folder_C', 'f2_test.txt'), 'r') as f:
-                    assert ss2 == f.read(), 'c0 folder 2 contents mismatch. test failed. \n%s' % s2
 
-                self.srv.syncthingHandler.remove_device_from_folder(fidA, cl1id).result()
-                self.srv.syncthingHandler.remove_device_from_folder(fidB, cl2id).result()
-                self.srv.syncthingHandler.remove_device_from_folder(fidC, cl0id).result()
-
-                self.srv.syncthingHandler.add_device_to_folder(fidA, cl2id).result()
-                self.srv.syncthingHandler.add_device_to_folder(fidB, cl0id).result()
-                self.srv.syncthingHandler.add_device_to_folder(fidC, cl1id).result()
-
-                time.sleep(15)
-
-                assert not os.path.exists(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_A')), 'FolderA not deleted from cl1'
-                assert not os.path.exists(os.path.join(self.test_root_path(), 'cl2', 'data', 'folder_B')), 'FolderB not deleted from cl2'
-                assert not os.path.exists(os.path.join(self.test_root_path(), 'cl0', 'data', 'folder_C')), 'FolderC not deleted from cl0'
-
-                with open(os.path.join(self.test_root_path(), 'cl0', 'data', 'folder_A', 'f0_test.txt'), 'r') as f:
-                    assert ss0 == f.read(), 'c0 folder 0 contents mismatch. test failed. \n%s' % s0
-                with open(os.path.join(self.test_root_path(), 'cl2', 'data', 'folder_A', 'f0_test.txt'), 'r') as f:
-                    assert ss0 == f.read(), 'c2 folder 0 contents mismatch. test failed. \n%s' % s0
-
-                with open(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_B', 'f1_test.txt'), 'r') as f:
-                    assert ss1 == f.read(), 'c1 folder 1 contents mismatch. test failed. \n%s' % s1
-                with open(os.path.join(self.test_root_path(), 'cl0', 'data', 'folder_B', 'f1_test.txt'), 'r') as f:
-                    assert ss1 == f.read(), 'c0 folder 1 contents mismatch. test failed. \n%s' % s1
-
-                with open(os.path.join(self.test_root_path(), 'cl2', 'data', 'folder_C', 'f2_test.txt'), 'r') as f:
-                    assert ss2 == f.read(), 'c2 folder 2 contents mismatch. test failed. \n%s' % s2
-                with open(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_C', 'f2_test.txt'), 'r') as f:
-                    assert ss2 == f.read(), 'c1 folder 2 contents mismatch. test failed. \n%s' % s2
-
+                logger.print('removing cl0 from fA, cl1 from fB, cl2 from fC')
                 self.srv.syncthingHandler.remove_device_from_folder(fidA, cl0id).result()
                 self.srv.syncthingHandler.remove_device_from_folder(fidB, cl1id).result()
                 self.srv.syncthingHandler.remove_device_from_folder(fidC, cl2id).result()
 
+                logger.print('adding cl1 to fA, cl2 to fB, cl0 to fC')
                 self.srv.syncthingHandler.add_device_to_folder(fidA, cl1id).result()
                 self.srv.syncthingHandler.add_device_to_folder(fidB, cl2id).result()
                 self.srv.syncthingHandler.add_device_to_folder(fidC, cl0id).result()
 
-                time.sleep(15)
+                logger.print('waiting 25s')
+                time.sleep(25)
 
+                logger.print('checking data on clients')
                 assert not os.path.exists(os.path.join(self.test_root_path(), 'cl0', 'data', 'folder_A')), 'FolderA not deleted from cl0'
                 assert not os.path.exists(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_B')), 'FolderB not deleted from cl1'
                 assert not os.path.exists(os.path.join(self.test_root_path(), 'cl2', 'data', 'folder_C')), 'FolderC not deleted from cl2'
 
                 with open(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_A', 'f0_test.txt'), 'r') as f:
                     assert ss0 == f.read(), 'c1 folder 0 contents mismatch. test failed. \n%s' % s0
-                with open(os.path.join(self.test_root_path(), 'cl2', 'data', 'folder_A', 'f0_test.txt'), 'r') as f:
-                    assert ss0 == f.read(), 'c2 folder 0 contents mismatch. test failed. \n%s' % s0
                 with open(os.path.join(self.test_root_path(), 'cl2', 'data', 'folder_B', 'f1_test.txt'), 'r') as f:
                     assert ss1 == f.read(), 'c2 folder 1 contents mismatch. test failed. \n%s' % s1
-                with open(os.path.join(self.test_root_path(), 'cl0', 'data', 'folder_B', 'f1_test.txt'), 'r') as f:
-                    assert ss1 == f.read(), 'c0 folder 1 contents mismatch. test failed. \n%s' % s1
                 with open(os.path.join(self.test_root_path(), 'cl0', 'data', 'folder_C', 'f2_test.txt'), 'r') as f:
-                    assert ss2 == f.read(), 'c0 folder 2 contents mismatch. test failed. \n%s' % s2
-                with open(os.path.join(self.test_root_path(), 'cl1', 'data', 'folder_C', 'f2_test.txt'), 'r') as f:
-                    assert ss2 == f.read(), 'c1 folder 2 contents mismatch. test failed. \n%s' % s2
+                    assert ss2 == f.read(), 'c3 folder 2 contents mismatch. test failed. \n%s' % s2
 
+                logger.print('stopping servers/clients')
                 self.cl0.stop()
                 self.cl1.stop()
                 self.cl2.stop()
                 self.srv.stop()
 
-                print("EVERYTHING STOPPED! ITERATION %d DONE" % i)
+                logger.print("EVERYTHING STOPPED! ITERATION %d DONE" % i)
 
                 self.srv = Server(os.path.join(self.test_root_path(), 'srv', 'config'), os.path.join(self.test_root_path(), 'srv', 'data'))
                 self.cl0 = Server(os.path.join(self.test_root_path(), 'cl0', 'config'), os.path.join(self.test_root_path(), 'cl0', 'data'))
                 self.cl1 = Server(os.path.join(self.test_root_path(), 'cl1', 'config'), os.path.join(self.test_root_path(), 'cl1', 'data'))
                 self.cl2 = Server(os.path.join(self.test_root_path(), 'cl2', 'config'), os.path.join(self.test_root_path(), 'cl2', 'data'))
 
-                self.srv.syncthingHandler.remove_device_from_folder(fidA, cl2id).result()
-                self.srv.syncthingHandler.remove_device_from_folder(fidB, cl0id).result()
-                self.srv.syncthingHandler.remove_device_from_folder(fidC, cl1id).result()
+                self.srv.syncthingHandler.remove_device_from_folder(fidA, cl1id).result()
+                self.srv.syncthingHandler.remove_device_from_folder(fidB, cl2id).result()
+                self.srv.syncthingHandler.remove_device_from_folder(fidC, cl0id).result()
 
                 self.srv.syncthingHandler.add_device_to_folder(fidA, cl0id).result()
                 self.srv.syncthingHandler.add_device_to_folder(fidB, cl1id).result()
                 self.srv.syncthingHandler.add_device_to_folder(fidC, cl2id).result()
-        except Exception as e:
-            self.error = e
-            self.qapp.quit()
         finally:
-            if isinstance(self.wgt0, DetailViewer):
-                self.wgt0.close()
             try:
                 self.cl0.stop()
             except:
