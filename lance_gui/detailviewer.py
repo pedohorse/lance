@@ -293,6 +293,6 @@ class DetailViewer(QMainWindow):
         elif isinstance(event, sth.FoldersRemovedEvent):
             for folder in event.folders():
                 self.__folderModel.remove_element(folder)
-        elif isinstance(event, sth.FoldersChangedEvent) or isinstance(event, sth.FoldersVolatileDataChangedEvent):
+        elif isinstance(event, sth.FoldersConfigurationChangedEvent) or isinstance(event, sth.FoldersVolatileDataChangedEvent):
             for folder in event.folders():
                 self.__folderModel.update_element(folder)
