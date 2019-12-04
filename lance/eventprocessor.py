@@ -36,7 +36,7 @@ class BaseEventProcessor(BaseEventProcessorInterface, lance_utils.StoppableThrea
     def __init__(self):
         super(BaseEventProcessor, self).__init__()
 
-    @async_method_queueonly
+    @async_method_queueonly(raise_while_invoking=True)
     def add_event(self, event):
         """
         note that there is no dedicated event queue - allevents go into async methods queue

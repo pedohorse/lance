@@ -22,7 +22,7 @@ class DatabaseHandler(ServerComponent):
     # 			con.close()
     # 		time.sleep(30)
 
-    # @async_method
+    # @async_method()
     # def generate_base_config(self):
     # 	'''
     # 	generates base config for folders and devices
@@ -69,7 +69,7 @@ class DatabaseHandler(ServerComponent):
     #
     # 	return conf
 
-    @async_method
+    @async_method()
     def get_configuration(self):
         """
 
@@ -118,7 +118,7 @@ class DatabaseHandler(ServerComponent):
 
         return cfg
 
-    @async_method
+    @async_method()
     def get_devices(self):
         '''
         query DB and get active device list
