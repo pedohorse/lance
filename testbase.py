@@ -39,6 +39,38 @@ class TestBase:
             self.print('waiting for %d seconds...' % seconds)
             time.sleep(seconds)
 
+        def check(self, assertion, timeout: int, time_to_hold: int = 0, interval: int = 1):
+            self.print('waiting for assertion to be true. timeout %d seconds...' % timeout)
+            last_ex = None
+            hold_start_time = None
+            start_time = time.time()
+            for i in range((timeout + time_to_hold) // interval + 1):
+                if time_to_hold > 0 and hold_start_time is None and i * interval > timeout:  # if timeout already reached and we are not waiting for condition to hold yet
+                    continue
+                try:
+                    assertion()
+                    if time_to_hold <= 0:
+                        break
+                    elif hold_start_time is None:
+                        hold_start_time = time.time()
+                    else:
+                        if time.time() - hold_start_time > time_to_hold:
+                            break
+                        time.sleep(interval)
+                        continue
+                except Exception as e:
+                    last_ex = e
+                    hold_start_time = None
+                    time.sleep(interval)
+            else:
+                self.print('assertion did not hold')
+                raise last_ex if last_ex is not None else RuntimeError('unknown exception somehow')
+            status = 'assertion became true after %.1f sec' % (hold_start_time - start_time)
+            if time_to_hold > 0:
+                status += ' and was held true for %d sec' % time_to_hold
+            self.print(status)
+
+
     def __init__(self):
         self.__testrootpath = os.path.join(testrootpath, self.__class__.__name__)
 
@@ -50,7 +82,7 @@ class TestBase:
     def test_root_path(self):
         return self.__testrootpath
 
-    def testBody(self, logger):
+    def testBody(self, logger: 'TestBase.StdoutSwitcher'):
         raise NotImplementedError()
 
     def run(self):
