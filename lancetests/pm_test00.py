@@ -52,12 +52,11 @@ class PM_Test0(TestBase):
                 self.cl1.start()
                 logger.print('all servers started')
 
-                logger.sleep(25)
-
-
                 logger.print('checking project manager for project')
-                assert len(self.srv0.projectManagers) == 1, 'srv0 has %d projects instead of 1' % len(self.srv0.projectManagers)
-                assert len(self.srv1.projectManagers) == 1, 'srv1 has %d projects instead of 1' % len(self.srv1.projectManagers)
+                def _check0_():
+                    assert len(self.srv0.projectManagers) == 1, 'srv0 has %d projects instead of 1' % len(self.srv0.projectManagers)
+                    assert len(self.srv1.projectManagers) == 1, 'srv1 has %d projects instead of 1' % len(self.srv1.projectManagers)
+                logger.check(_check0_, timeout=35, time_to_hold=10)
 
                 srv0_pm = tuple(self.srv0.projectManagers.values())[0]
                 srv1_pm = tuple(self.srv1.projectManagers.values())[0]
@@ -79,40 +78,37 @@ class PM_Test0(TestBase):
                 with open(os.path.join(fpath0s0, 'f0_test.txt'), 'r') as f:
                     s0 = f.read()
 
-                logger.sleep(35)
+                logger.print('checking if user exists and checking shot folder')
+                def _check1_():
+                    assert 'al.bob' in srv0_pm.get_users().result(), 'al.bob not in srv0'
+                    assert 'al.bob' in srv1_pm.get_users().result(), 'al.bob not in srv1'
 
-                logger.print('checking if user exists')
-                assert 'al.bob' in srv0_pm.get_users().result(), 'al.bob not in srv0'
-                assert 'al.bob' in srv1_pm.get_users().result(), 'al.bob not in srv1'
-
-                logger.print('checking shot folder')
-                with open(os.path.join(self.test_root_path(), 'srv1', 'data', 'first shot :main', 'f0_test.txt'), 'r') as f:
-                    assert s0 == f.read(), 'srv1 folder 0 contents mismatch. test failed. \n%s' % s0
-                with open(os.path.join(self.test_root_path(), 'cl0', 'data', 'first shot :main', 'f0_test.txt'), 'r') as f:
-                    assert s0 == f.read(), 'c0 shot folder contents mismatch. test failed. \n%s' % s0
-                with open(os.path.join(self.test_root_path(), 'cl1', 'data', 'first shot :main', 'f0_test.txt'), 'r') as f:
-                    assert s0 == f.read(), 'c1 shot folder contents mismatch. test failed. \n%s' % s0
+                    with open(os.path.join(self.test_root_path(), 'srv1', 'data', 'first shot :main', 'f0_test.txt'), 'r') as f:
+                        assert s0 == f.read(), 'srv1 folder 0 contents mismatch. test failed. \n%s' % s0
+                    with open(os.path.join(self.test_root_path(), 'cl0', 'data', 'first shot :main', 'f0_test.txt'), 'r') as f:
+                        assert s0 == f.read(), 'c0 shot folder contents mismatch. test failed. \n%s' % s0
+                    with open(os.path.join(self.test_root_path(), 'cl1', 'data', 'first shot :main', 'f0_test.txt'), 'r') as f:
+                        assert s0 == f.read(), 'c1 shot folder contents mismatch. test failed. \n%s' % s0
+                logger.check(_check1_, timeout=35, time_to_hold=10)
 
                 logger.print('removing shot')
                 srv1_pm.remove_shot('firstshot_id').result()
-
-                logger.sleep(35)
-
                 logger.print('checking the shot is removed')
-
-                assert os.path.exists(fpath0s0), 'srv0 shotpath does not exists'  # servers do not delete folders from disc
-                assert os.path.exists(os.path.join(self.test_root_path(), 'srv1', 'data', 'first shot :main')), 'srv1 shotpath does not exists' # servers do not delete folders from disc
-                assert not os.path.exists(os.path.join(self.test_root_path(), 'cl0', 'data', 'first shot :main')), 'cl0 shotpath still exists'
-                assert not os.path.exists(os.path.join(self.test_root_path(), 'cl1', 'data', 'first shot :main')), 'cl1 shotpath still exists'
+                def _check2_():
+                    assert os.path.exists(fpath0s0), 'srv0 shotpath does not exists'  # servers do not delete folders from disc
+                    assert os.path.exists(os.path.join(self.test_root_path(), 'srv1', 'data', 'first shot :main')), 'srv1 shotpath does not exists' # servers do not delete folders from disc
+                    assert not os.path.exists(os.path.join(self.test_root_path(), 'cl0', 'data', 'first shot :main')), 'cl0 shotpath still exists'
+                    assert not os.path.exists(os.path.join(self.test_root_path(), 'cl1', 'data', 'first shot :main')), 'cl1 shotpath still exists'
+                logger.check(_check2_, timeout=35, time_to_hold=10)
 
                 logger.print('removing user')
                 srv1_pm.remove_user('al.bob')
 
-                logger.sleep(35)
-
                 logger.print('checking if user is gone')
-                assert len(srv0_pm.get_users().result()) == 0, 'srv0 has nonzero users'
-                assert len(srv1_pm.get_users().result()) == 0, 'srv1 has nonzero users'
+                def _check3_():
+                    assert len(srv0_pm.get_users().result()) == 0, 'srv0 has nonzero users'
+                    assert len(srv1_pm.get_users().result()) == 0, 'srv1 has nonzero users'
+                logger.check(_check3_, timeout=35, time_to_hold=10)
 
                 logger.print('stopping all servers')
                 self.cl0.stop()
