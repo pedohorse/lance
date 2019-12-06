@@ -55,11 +55,11 @@ class Server(object):
                     if possibleproject is None or possibleproject in self.__server.projectManagers:
                         continue
                     self.__log(1, 'new project discovered! %s' % possibleproject)
-                    newpm = ProjectManager(self.__server, possibleproject)
+                    newpm = ProjectManager(self.__server, possibleproject, config_sync_status=self.__server.syncthingHandler.config_synced())
                     self.__server.projectManagers[possibleproject] = newpm
                     self.__log(1, 'starting new project manager')
                     newpm.start()
-                    newpm.rescan_configuration()
+                    newpm.rescan_configuration().set_raise_on_invoke(True)
 
             elif isinstance(event, ConfigSyncChangedEvent):
                 # need to check if new projects appeared, and if so - create new project managers
@@ -69,11 +69,11 @@ class Server(object):
                     if possibleproject in self.__server.projectManagers:
                         continue
                     self.__log(1, 'new project discovered! %s' % possibleproject)
-                    newpm = ProjectManager(self.__server, possibleproject)
+                    newpm = ProjectManager(self.__server, possibleproject, config_sync_status=self.__server.syncthingHandler.config_synced())
                     self.__server.projectManagers[possibleproject] = newpm
                     self.__log(1, 'starting new project manager')
                     newpm.start()
-                    newpm.rescan_configuration()
+                    newpm.rescan_configuration().set_raise_on_invoke(True)
 
     def __init__(self, config_root_path=None, data_root_path=None):
         super(Server, self).__init__()
