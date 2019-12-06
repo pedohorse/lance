@@ -139,6 +139,9 @@ class StoppableThread(threading.Thread):
         def check(self):
             return self.__done.isSet()
 
+        def set_raise_on_invoke(self, do_raise):
+            self.__raiseImmediately = do_raise
+
         def result(self, timeout=None):
             if not self.wait(timeout):
                 raise StoppableThread.ResultNotReady()
