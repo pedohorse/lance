@@ -174,7 +174,8 @@ class Device:
         return self.__name if self.__name is not None else 'device %s' % self.__stid[:6]
 
     def __eq__(self, other):  # comparing all but volatile data, like connection state
-        return self.__stid == other.__stid and \
+        return other is not None and\
+               self.__stid == other.__stid and \
                self.__name == other.__name  # TODO: should name be a part of this? on one hand - yes, cuz we need it to detect changes in config
 
     def __deepcopy__(self, memodict=None):
@@ -282,7 +283,8 @@ class Folder:
         self.__devices.remove(device)
 
     def __eq__(self, other):  # comparing all but volatile data, like connection state
-        return self.__stfid == other.__stfid and \
+        return other is not None and\
+               self.__stfid == other.__stfid and \
                self.__label == other.__label and \
                self.__path == other.__path and \
                self.__devices == other.__devices and \
@@ -881,7 +883,7 @@ class SyncthingHandler(ServerComponent):
             self.__log(1, "no changes required")
             return
         dids_to_add = dids.difference(existing_dids)
-        dids_to_remove = existing_dids.difference(dids)
+        dids_to_remove = existing_dids.difference(dids).difference(self.__servers)
 
         devs_added_forevent = set()
         devs_removed_forevent = set()
@@ -903,6 +905,12 @@ class SyncthingHandler(ServerComponent):
             devs_removed_forevent.add(self.__devices[did])
             del self.__devices[did]
 
+        self.__save_configuration()
+        self.__save_st_config()
+        for did in dids_to_add.union(dids_to_update):
+            self.__save_device_configuration(did)
+
+        #send events
         if len(folders_updated) > 0:
             self._enqueueEvent(FoldersConfigurationChangedEvent(folders_updated, 'external::set_devices'))  # note that those are copied folder objects
         if len(devs_added_forevent) > 0:
