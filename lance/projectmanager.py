@@ -99,7 +99,7 @@ class User:
     def __init__(self, mdata):
         self.__id = mdata['id']
         self.__readableName = mdata['name']
-        self.__deviceids = set(mdata['deviceids'])
+        self.__deviceids = set(mdata['deviceids'])  # type: Set[str]
         self.__deviceids_tuple = None
         self.__access_shotids = set()  # type: Set[Tuple[str, str]]
         for shotid, partid in mdata['access']:
@@ -159,7 +159,7 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
             projectnames.add(pm_metadata['project'])
         return projectnames
 
-    def __init__(self, server, project: str):
+    def __init__(self, server, project: str, config_sync_status=False):
         super(ProjectManager, self).__init__(server)
         self.__sthandler = server.syncthingHandler  # type: syncthinghandler.SyncthingHandler
         # TODO: detect required components in a more dynamic way
@@ -167,7 +167,7 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         self.__projectSettingsFolder = None
         self.__shots = {}  # type: Dict[str, Dict[str, ShotPart]]
         self.__users = {}  # type: Dict[str, User]
-        self.__configInSync = False
+        self.__configInSync = config_sync_status
         self.__log = get_logger('%s %s' % (self.__sthandler.myId()[:5], self.__class__.__name__))
         self._server.eventQueueEater.add_event_processor(self)
 
@@ -215,9 +215,8 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
                     metadata = folder.metadata()['__ProjectManager_data__']
                     if metadata['project'] != self.__project:
                         continue
-                    break
-                else:
                     self.__rescanConfiguration()
+                    break
 
                     # if folder.id() in (x.id() for x in self.__shots[metadata['shot']]):
                     #     self.__log(1, 'addFolderEvent: shot part is present: %s' % folder.id())
@@ -231,9 +230,9 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
                     metadata = folder.metadata()['__ProjectManager_data__']
                     if metadata['project'] != self.__project:
                         continue
-                    break
-                else:
                     self.__rescanConfiguration()
+                    break
+
 
                     # for shotpart in self.__shots[metadata['shot']]:
                     #     if shotpart.id() == folder.id():
@@ -267,9 +266,9 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
                     metadata = folder.metadata()['__ProjectManager_data__']
                     if metadata['project'] != self.__project:
                         continue
-                    break
-                else:
                     self.__rescanConfiguration()
+                    break
+
 
     @classmethod
     def is_init_event(cls, event):
@@ -383,6 +382,7 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         else:  # not server
             configchanged = self.__shots != oldshots
 
+        self.__log(1, 'all done, config rescanned')
         # if configchanged:
         #     if self.__shots != oldshots:
         #         alloldshotparts = {}
@@ -509,6 +509,48 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
             return
 
         del config['users'][userid]
+
+        with open(os.path.join(configpath, 'config.cfg'), 'w') as f:
+            json.dump(config, f)
+        # after this syncthing should sync folders and emit foldersync event
+
+    @async_method()
+    def add_devices_to_user(self, uiserid, devices: Union[str, Iterable[str]]):
+        if isinstance(devices, str):
+            devices = (devices,)
+        if uiserid not in self.__users:
+            raise RuntimeError('user %s does not exist' % uiserid)
+        self.__log(1, 'adding devices %s to user %s' % (repr(devices), uiserid))
+
+        for devid in devices:
+            self.__users[uiserid].add_device(devid)
+
+        configpath = self.__projectSettingsFolder.path()
+        with open(os.path.join(configpath, 'config.cfg'), 'r') as f:
+            config = json.load(f)
+
+        config['users'][uiserid]['deviceids'] = list(self.__users[uiserid].device_ids())
+
+        with open(os.path.join(configpath, 'config.cfg'), 'w') as f:
+            json.dump(config, f)
+        # after this syncthing should sync folders and emit foldersync event
+
+    @async_method()
+    def remove_devices_from_user(self, uiserid, devices: Union[str, Iterable[str]]):
+        if isinstance(devices, str):
+            devices = (devices,)
+        if uiserid not in self.__users:
+            raise RuntimeError('user %s does not exist' % uiserid)
+        self.__log(1, 'removing devices %s from user %s' % (repr(devices), uiserid))
+
+        for devid in devices:
+            self.__users[uiserid].remove_device(devid)
+
+        configpath = self.__projectSettingsFolder.path()
+        with open(os.path.join(configpath, 'config.cfg'), 'r') as f:
+            config = json.load(f)
+
+        config['users'][uiserid]['deviceids'] = list(self.__users[uiserid].device_ids())
 
         with open(os.path.join(configpath, 'config.cfg'), 'w') as f:
             json.dump(config, f)
