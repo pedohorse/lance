@@ -8,9 +8,10 @@ except ImportError:
 import string
 import random
 import copy
+import time
 
 from .servercomponent import ServerComponent
-from .lance_utils import async_method, async_method_queueonly
+from .lance_utils import async_method
 from .logger import get_logger
 
 from . import syncthinghandler
@@ -177,7 +178,7 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         self._server.eventQueueEater.remove_event_provessor(self)
 
     # Event processor methods
-    @async_method_queueonly(raise_while_invoking=True)
+    @async_method(raise_while_invoking=True, queue_only=True)
     def add_event(self, event):
         self.__log(1, 'PManager: event received: %s, config sync: %s' % (repr(event), self.__configInSync))
         if not self.__configInSync:
@@ -336,6 +337,8 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
                         config = json.load(f)
                 except:
                     self.__log(3, 'config loading error - might be not in sync, might be corrupted')
+                    self.__configInSync = False
+                    return
                 else:
                     users = config.get('users', {})
                     for userid, userdata in users.items():
@@ -374,10 +377,13 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
             for devidset in folderidToDevidset.values():
                 allDevids.update(devidset)
 
-            self.__sthandler.set_devices(allDevids)  # note that sthandler will only make changes if devlists do not match
+            with syncthinghandler.SyncthingHandler.ConfigMethodsBatch(self.__sthandler) as batch:
+                self.__log(1, 'queing set devices')
+                batch.set_devices(allDevids).set_retry_exception_types((syncthinghandler.ConfigNotInSyncError,))  # note that sthandler will only make changes if devlists do not match
+                self.__log(1, ' set devices queued')
 
-            for folderid, allShotpartDevids in folderidToDevidset.items():
-                self.__sthandler.set_folder_devices(folderid, allShotpartDevids)
+                for folderid, allShotpartDevids in folderidToDevidset.items():
+                    batch.set_folder_devices(folderid, allShotpartDevids).set_retry_exception_types((syncthinghandler.ConfigNotInSyncError,))
 
         else:  # not server
             configchanged = self.__shots != oldshots
@@ -442,8 +448,10 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         self.__log(1, 'removing shotid %s' % shotid)
         if shotid not in self.__shots:
             self.__log(2, 'shotid %s is not part of project %s' % (shotid, self.__project))
-        for shotpart in self.__shots[shotid].values():
-            self.__sthandler.remove_folder(shotpart.stfolder_id())
+
+        with syncthinghandler.SyncthingHandler.ConfigMethodsBatch(self.__sthandler) as batch:
+            for shotpart in self.__shots[shotid].values():
+                batch.remove_folder(shotpart.stfolder_id())
 
     @async_method()
     def remove_shotpart(self, shotpart: Union[str, ShotPart]):

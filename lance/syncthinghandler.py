@@ -17,12 +17,13 @@ import hashlib
 
 from .servercomponent import ServerComponent
 from . import lance_utils
-from .lance_utils import async_method, BaseEvent
+from .lance_utils import async_method, AsyncMethodBatch
 from .eventtypes import *
 from . import eventprocessor
 from .logger import get_logger
 
 from typing import Union, Optional, Iterable, Set, Dict
+
 
 def listdir(path):
     return filter(lambda x: re.match(r'^\.syncthing\..*\.tmp$', x) is None, os.listdir(path))
@@ -139,6 +140,7 @@ class Device:
         self.__sthandler = sthandler
         self.__volatiledata = DeviceVolatileData()
         self.__ismyself = self.__sthandler is not None and self.__sthandler.myId() == id
+        self.__delete_on_sync_after = None
 
     def volatile_data(self):
         return self.__volatiledata
@@ -173,10 +175,24 @@ class Device:
             return 'myself'
         return self.__name if self.__name is not None else 'device %s' % self.__stid[:6]
 
+    def schedule_for_deletion(self):
+        if self.__delete_on_sync_after is None:
+            self.__delete_on_sync_after = time.time()
+
+    def unschedule_for_deletion(self):
+        self.__delete_on_sync_after = None
+
+    def is_schediled_for_deletion(self):
+        return self.__delete_on_sync_after is not None
+
+    def get_delete_after_time(self):
+        return self.__delete_on_sync_after
+
     def __eq__(self, other):  # comparing all but volatile data, like connection state
         return other is not None and\
                self.__stid == other.__stid and \
-               self.__name == other.__name  # TODO: should name be a part of this? on one hand - yes, cuz we need it to detect changes in config
+               self.__name == other.__name and \
+               self.__delete_on_sync_after == other.__delete_on_sync_after  # TODO: should name be a part of this? on one hand - yes, cuz we need it to detect changes in config
 
     def __deepcopy__(self, memodict=None):
         newone = copy.copy(self)
@@ -190,13 +206,19 @@ class Device:
 
     def serialize(self) -> str:
         return json.dumps({"id": self.__stid,
-                           "name": self.__name
+                           "name": self.__name,
+                           "delete_on_sync_after": self.__delete_on_sync_after
                            })
 
     @classmethod
-    def deserialize(cls, sthandler, s: str):
-        data = json.loads(s)
-        return Device(sthandler, data['id'], data['name'])
+    def deserialize(cls, sthandler, s: Union[str, dict]):
+        if isinstance(s, str):
+            data = json.loads(s)
+        else:
+            data = s
+        newdev = Device(sthandler, data['id'], data['name'])
+        newdev.__delete_on_sync_after = data['delete_on_sync_after']
+        return newdev
 
 
 class Folder:
@@ -404,20 +426,39 @@ class SyncthingHandler(ServerComponent):
             return self.__path
 
     class SyncthingPauseLock:
+        __lockSet = set()
+
         def __init__(self, sthandler: 'SyncthingHandler'):
             self.__sthandler = sthandler
             self.__doUnpause = False
 
         def __enter__(self):
-            if not self.__sthandler.syncthing_running():
+            if not self.__sthandler.syncthing_running() or self.__sthandler in SyncthingHandler.SyncthingPauseLock.__lockSet:
                 return
+            SyncthingHandler.SyncthingPauseLock.__lockSet.add(self.__sthandler)
             self.__sthandler._SyncthingHandler__pause_syncthing()
             self.__doUnpause = True
 
         def __exit__(self, exc_type, exc_val, exc_tb):
             if not self.__doUnpause:
                 return
+            SyncthingHandler.SyncthingPauseLock.__lockSet.remove(self.__sthandler)
             self.__sthandler._SyncthingHandler__resume_syncthing()
+
+
+    class ConfigMethodsBatch(AsyncMethodBatch):
+        def __init__(self, sthandler: 'SyncthingHandler'):
+            super(SyncthingHandler.ConfigMethodsBatch, self).__init__(sthandler)
+            self.__sthandler = sthandler
+
+        def __enter__(self):
+            ret = super(SyncthingHandler.ConfigMethodsBatch, self).__enter__()
+            self._methodbatch_hold_st_update()
+            return ret
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self._methodbatch_resume_st_update()
+            return super(SyncthingHandler.ConfigMethodsBatch, self).__exit__(exc_type, exc_val, exc_tb)
 
     def __init__(self, server):
         super(SyncthingHandler, self).__init__(server)
@@ -445,6 +486,9 @@ class SyncthingHandler(ServerComponent):
 
         self._last_event_id = 0
 
+        self.__defer_stupdate = False
+        self.__defer_stupdate_writerequired = False
+
         self.__isValidState = True
         self.__configInSync = False
         self.__reload_configuration()
@@ -452,6 +496,7 @@ class SyncthingHandler(ServerComponent):
             self.__updateClientConfigs()
         self.__log = get_logger('%s %s' % (self.myId()[:5], self.__class__.__name__))
         self.__log.min_log_level = 1
+        self.__st_config_locks = []
 
     def start(self):
         super(SyncthingHandler, self).start()
@@ -506,10 +551,15 @@ class SyncthingHandler(ServerComponent):
 
                 for stevent in stevents:
                     # filter and pack events into our wrapper
+
+                    eventtime_datetime = datetime.datetime.strptime(re.sub('\d{3}(?=[\+-]\d{2}:\d{2}$)', '', stevent['time']), '%Y-%m-%dT%H:%M:%S.%f%z')
+                    eventtime = eventtime_datetime.timestamp()
                     #just fancy logging:
-                    logtext = 'event type "%s"' % stevent['type']
+                    logtext = 'event type "%s" from %s' % (stevent['type'], eventtime_datetime.strftime('%H:%M:%S.%f'))
                     if stevent['type'] == 'FolderSummary':
                         logtext += ' %s: %d' % (stevent['data']['folder'], stevent['data']['summary']['needTotalItems'])
+                    elif stevent['type'] == 'ItemStarted':
+                        logtext += '%s: %s: %s' % (stevent['data']['folder'], stevent['data']['action'], stevent['data']['item'])
                     self.__log(1, logtext)
 
                     if stevent['type'] == 'StartupComplete':
@@ -526,7 +576,7 @@ class SyncthingHandler(ServerComponent):
                                     try:
                                         self.__reload_configuration()
                                     except Exception as e:
-                                        self.__log(2, 'config reload failed cuz of %s probably being updated by syncthing' % repr(e))
+                                        self.__log(2, 'config reload failed cuz of Exception %s probably being updated by syncthing' % repr(e))
                                         self.__configInSync = False
                                 self._enqueueEvent(ConfigSyncChangedEvent(self.__configInSync))
                         except requester.HTTPError as e:
@@ -541,11 +591,13 @@ class SyncthingHandler(ServerComponent):
 
                     # Config sincronization event processing
                     elif self.__configInSync and stevent['type'] == 'ItemStarted' and stevent['data']['folder'] == self.get_config_folder().fid():  # need to send him the configuration
+                        self.__log(1, 'starting to sync server configuration, config in sync = False')
                         self.__configInSync = False
                         self._enqueueEvent(ConfigSyncChangedEvent(False))
                     elif not self.__configInSync and stevent['type'] == 'FolderSummary' and stevent['data']['folder'] == self.get_config_folder().fid():
                         data = stevent['data']
                         if data['summary']['needTotalItems'] == 0:
+                            self.__log(1, 'server configuration sync completed, config in sync = True')
                             self.__configInSync = True
                             try:
                                 self.__reload_configuration()  # TODO: add parameter to nobootstrap, cuz we need to override bootstrap at this point
@@ -588,6 +640,22 @@ class SyncthingHandler(ServerComponent):
                             self.__devices[did]._update_volatile_data(stevent['data'])
                             self.__log(1, repr(self.__devices[did].volatile_data()))
                             self._enqueueEvent(DevicesVolatileDataChangedEvent((copy.deepcopy(self.__devices[did]),), 'syncthing::event'))
+                    elif stevent['type'] == 'FolderCompletion' and \
+                            stevent['data']['device'] in self.__devices and \
+                            self.__devices[stevent['data']['device']].is_schediled_for_deletion() and \
+                            stevent['data']['folder'] == self.get_config_folder(stevent['data']['device']).fid():
+                        did = stevent['data']['device']
+                        self.__log(1, 'FolderCompletion event for a device scheduled for deletion. c=%d' % stevent['data']['completion'])
+                        if stevent['data']['completion'] == 100 and eventtime > self.__devices[did].get_delete_after_time():
+                            # so device is synced and now can be safely deleted
+                            self.__log(1, 'now safe to delete device %s' % did)
+                            del self.__devices[did]
+                            self.__save_configuration(save_st_config=True)
+                            #self.__save_st_config()
+                            # Note that we don't update any device config, cuz if device scheduled for deletion - it must have already been removed from everything
+                            # so here we just do sanity check
+                            for fid, folder in self.__folders.items():
+                                assert did not in folder.devices()
                     #elif stevent['type'] == 'ItemFinished':
                     #    data = stevent['data']
                     #    if data['folder'] in self.get_config_folder().fid():
@@ -622,7 +690,7 @@ class SyncthingHandler(ServerComponent):
 
                 self.__servers = set()
                 self.__devices = {self.myId(): Device(self, self.myId())}
-            self.__save_configuration()
+            self.__save_configuration(save_st_config=False)
 
         finally:
             if dorestart:
@@ -661,6 +729,24 @@ class SyncthingHandler(ServerComponent):
                                               path=os.path.join(self.data_root, 'control', devid)
                                               )
         #return self.__devices[device].get('controlfolder', None)
+
+    @async_method()
+    def _methodbatch_hold_st_update(self):
+        """
+        :return:
+        """
+        self.__defer_stupdate = True
+        self.__defer_stupdate_writerequired = False
+
+    @async_method()
+    def _methodbatch_resume_st_update(self):
+        """
+        :return:
+        """
+        self.__defer_stupdate = False
+        if self.__defer_stupdate_writerequired:
+            self.__save_st_config()
+        self.__defer_stupdate_writerequired = False
 
     # INTERFACE
     # note: all getters are doing copy to avoid race conditions
@@ -729,7 +815,7 @@ class SyncthingHandler(ServerComponent):
             raise RuntimeError('device list is provided by server')
         if not self.__configInSync:
             raise ConfigNotInSyncError()
-        if did not in self.__devices:
+        if did not in self.__devices or self.__devices[did].is_schediled_for_deletion():
             raise RuntimeError('device %s does not belong to this server' % did)
         if fid not in self.__folders:
             raise RuntimeError('folder %s does not belong to this server' % did)
@@ -737,9 +823,9 @@ class SyncthingHandler(ServerComponent):
         if did not in self.__folders[fid].devices():
             self.__log(1, 'adding')
             self.__folders[fid].add_device(did)
-            self.__save_configuration()
+            self.__save_configuration(save_st_config=True)
             self.__log(1, "config saved %s" % repr(self.__folders[fid].devices()))
-            self.__save_st_config()
+            #self.__save_st_config()
             for dev in self.__folders[fid].devices():
                 self.__save_device_configuration(dev)
             self._enqueueEvent(FoldersConfigurationChangedEvent((copy.deepcopy(self.__folders[fid]),), 'external::add_device_to_folder'))
@@ -756,9 +842,9 @@ class SyncthingHandler(ServerComponent):
         if did in self.__folders[fid].devices():
             self.__log(1, 'removing')
             self.__folders[fid].remove_device(did)
-            self.__save_configuration()
+            self.__save_configuration(save_st_config=True)
             self.__log(1, "config saved %s" % repr(self.__folders[fid].devices()))
-            self.__save_st_config()
+            #self.__save_st_config()
             for dev in self.__folders[fid].devices():
                 self.__save_device_configuration(dev)
             self.__save_device_configuration(did)
@@ -771,7 +857,7 @@ class SyncthingHandler(ServerComponent):
         if not self.__configInSync:
             raise ConfigNotInSyncError()
         for did in dids:
-            if did not in self.__devices:
+            if did not in self.__devices or self.__devices[did].is_schediled_for_deletion():
                 raise RuntimeError('device %s does not belong to this server' % did)
         if fid not in self.__folders:
             raise RuntimeError('folder %s does not belong to this server' % did)
@@ -789,12 +875,12 @@ class SyncthingHandler(ServerComponent):
         for did in toadd:
             self.__log(1, 'adding %s to %s' % (did, fid))
             self.__folders[fid].add_device(did)
-        self.__save_configuration()
+        self.__save_configuration(save_st_config=True)
         self.__log(1, "config saved, %s had devices: %s" % (fid, repr(self.__folders[fid].devices())))
-        self.__save_st_config()
-        for did in toadd.union(todel):
+        #self.__save_st_config()
+        for did in self.__folders[fid].devices().union(todel):
             self.__save_device_configuration(did)
-        # not send events
+        # now send events
         eventdata = (copy.deepcopy(self.__folders[fid]),)
         self._enqueueEvent(FoldersConfigurationChangedEvent(eventdata, 'external::set_folder_devices'))
 
@@ -803,7 +889,7 @@ class SyncthingHandler(ServerComponent):
     def set_server_secret(self, secret):  # TODO: hm.... need to figure out how to do this safely at runtime
         assert isinstance(secret, str), 'secret must be a str'
         self.__server_secret = secret
-        self.__save_configuration()
+        self.__save_configuration(save_st_config=False)  # TODO: can we just save bootstrap here?
         self.__reload_configuration()
 
     @async_method()
@@ -817,9 +903,17 @@ class SyncthingHandler(ServerComponent):
         if name == self.__devices[did].name():
             return
         self.__devices[did]._setName(name)
-        self.__save_configuration()
-        self.__save_st_config()
-        self.__save_device_configuration(self.__devices[did])
+        self.__save_configuration(save_st_config=True)
+        #self.__save_st_config()
+
+        # now we need to inform ALL devices this one has contact with about the new name
+        devfids = [fid for fid in self.__folders if did in self.__folders[fid].devices()]
+        devfiddevs = {}  # all devices that share allowed folders
+        for fid in devfids:
+            devfiddevs.update({dev: self.__devices[dev] for dev in self.__folders[fid].devices()})
+        for x in devfiddevs:
+            self.__save_device_configuration(x)
+
         self._enqueueEvent(DevicesChangedEvent((copy.deepcopy(self.__devices[did]),), 'external::set_device_name'))
 
     @async_method()
@@ -833,14 +927,20 @@ class SyncthingHandler(ServerComponent):
         if not self.__configInSync:
             raise ConfigNotInSyncError()
         if deviceid in self.__devices:
+            if self.__devices[deviceid].is_schediled_for_deletion():
+                self.__devices[deviceid].unschedule_for_deletion()
+                self.__save_configuration(save_st_config=True)
+                #self.__save_st_config()
+                for dev in self.__devices:
+                    self.__save_device_configuration(dev)
             return
         self.__log(1, 'adding device %s' % deviceid)
         self.__devices[deviceid] = Device(self, deviceid, name=name)
-        self.__save_configuration()
-        self.__save_st_config()
-        if self._isServer():
-            for dev in self.__devices:
-                self.__save_device_configuration(dev)
+        self.__save_configuration(save_st_config=True)
+        #self.__save_st_config()
+        self.__save_device_configuration(deviceid)
+        #for dev in self.__devices:
+        #    self.__save_device_configuration(dev)
         self._enqueueEvent(DevicesAddedEvent((copy.deepcopy(self.__devices[deviceid]),), 'external::add_device'))
 
     def __interface_removeDevice(self, deviceid):
@@ -848,7 +948,8 @@ class SyncthingHandler(ServerComponent):
             raise RuntimeError('device list is provided by server')
         if not self.__configInSync:
             raise ConfigNotInSyncError()
-        if deviceid not in self.__devices:
+        if deviceid not in self.__devices or self.__devices[deviceid].is_schediled_for_deletion():
+            self.__log(1, 'was about to removing device %s, but its already removed/scheduled for removal' % deviceid)
             return
         self.__log(1, 'removing device %s' % deviceid)
         dids_to_update = set()
@@ -858,10 +959,14 @@ class SyncthingHandler(ServerComponent):
                 folder.remove_device(deviceid)
                 dids_to_update.update(folder.devices())
                 folders_updated.add(copy.deepcopy(self.__folders[fid]))
+
+        # now we cannot just delete device like we do with folders - it will not sync if we delete it straight away, and therefore will not know it was deleted.
+
         remdevice = self.__devices[deviceid]
-        del self.__devices[deviceid]
-        self.__save_configuration()
-        self.__save_st_config()
+        remdevice.schedule_for_deletion()
+        self.__save_configuration(save_st_config=True)
+        #self.__save_st_config()
+        dids_to_update.add(deviceid)
         for did in dids_to_update:
             self.__save_device_configuration(did)
 
@@ -878,41 +983,42 @@ class SyncthingHandler(ServerComponent):
         self.__log(1, "setting device list to %s" % repr(dids))
         if not isinstance(dids, set):
             dids = set(dids)
-        existing_dids = set(self.__devices.keys())
+        existing_dids = set((x for x, y in self.__devices.items() if not y.is_schediled_for_deletion() and x not in self.__servers))
         if dids == existing_dids:
             self.__log(1, "no changes required")
             return
         dids_to_add = dids.difference(existing_dids)
-        dids_to_remove = existing_dids.difference(dids).difference(self.__servers)
+        dids_to_remove = existing_dids.difference(dids).difference(self.__servers)  # though there are no servers in existing_dids by construction
 
-        devs_added_forevent = set()
-        devs_removed_forevent = set()
+        devs_added_forevent = []
+        devs_removed_forevent = []
+        folders_updated_forevent = []
 
         self.__log(1, 'adding devices %s' % dids_to_add)
         for did in dids_to_add:
             self.__devices[did] = Device(self, did)
-            devs_added_forevent.add(copy.deepcopy(self.__devices[did]))
+            devs_added_forevent.append(copy.deepcopy(self.__devices[did]))
 
         self.__log(1, 'removing devices %s' % dids_to_remove)
         dids_to_update = set()
-        folders_updated = set()
+
         for did in dids_to_remove:
             for fid, folder in self.__folders.items():
                 if did in folder.devices():
                     folder.remove_device(did)
                     dids_to_update.update(folder.devices())
-                    folders_updated.add(copy.deepcopy(self.__folders[fid]))
-            devs_removed_forevent.add(self.__devices[did])
-            del self.__devices[did]
+                    folders_updated_forevent.append(copy.deepcopy(self.__folders[fid]))
+            devs_removed_forevent.append(self.__devices[did])
+            self.__devices[did].schedule_for_deletion()
 
-        self.__save_configuration()
-        self.__save_st_config()
-        for did in dids_to_add.union(dids_to_update):
+        self.__save_configuration(save_st_config=True)
+        #self.__save_st_config()
+        for did in dids_to_add.union(dids_to_update).union(dids_to_remove):
             self.__save_device_configuration(did)
 
         #send events
-        if len(folders_updated) > 0:
-            self._enqueueEvent(FoldersConfigurationChangedEvent(folders_updated, 'external::set_devices'))  # note that those are copied folder objects
+        if len(folders_updated_forevent) > 0:
+            self._enqueueEvent(FoldersConfigurationChangedEvent(folders_updated_forevent, 'external::set_devices'))  # note that those are copied folder objects
         if len(devs_added_forevent) > 0:
             self._enqueueEvent(DevicesAddedEvent(devs_added_forevent, 'external::set_devices'))
         if len(devs_removed_forevent) > 0:
@@ -928,8 +1034,8 @@ class SyncthingHandler(ServerComponent):
         self.__log(1, 'adding server %s' % deviceid)
         self.__servers.add(deviceid)
 
-        self.__save_configuration()
-        self.__save_st_config()
+        self.__save_configuration(save_st_config=True)
+        #self.__save_st_config()
         if self._isServer():
             for dev in self.__devices:
                 self.__save_device_configuration(dev)
@@ -965,8 +1071,8 @@ class SyncthingHandler(ServerComponent):
                 raise RuntimeError('unexpected probability! call ghost busters')
         self.__folders[fid] = Folder(self, fid, label, folderPath, devList, metadata)
 
-        self.__save_configuration()
-        self.__save_st_config()
+        self.__save_configuration(save_st_config=True)
+        #self.__save_st_config()
         for dev in devList:
             self.__save_device_configuration(dev)
         self._enqueueEvent(FoldersAddedEvent((copy.deepcopy(self.__folders[fid]),), 'external::add_folder'))
@@ -986,8 +1092,8 @@ class SyncthingHandler(ServerComponent):
         folder = self.__folders[folderId]
         del self.__folders[folderId]
 
-        self.__save_configuration()
-        self.__save_st_config()
+        self.__save_configuration(save_st_config=True)
+        #self.__save_st_config()
         for dev in folder.devices():
             self.__save_device_configuration(dev)
         # note that server does NOT delete folder from disc when folder is removed
@@ -1062,7 +1168,10 @@ class SyncthingHandler(ServerComponent):
             for dev in listdir(os.path.join(configFoldPath, 'devices')):
                 with open(os.path.join(configFoldPath, 'devices', dev), 'r') as f:
                     fdata = json.load(f)
-                newdevice = Device(self, dev, fdata.get('name', None))
+                newdevice = Device.deserialize(self, fdata)
+                    # Device(self, dev, fdata.get('name', None))
+                if newdevice.id() != dev:
+                    raise RuntimeError('config inconsistent!!')  # TODO: add special inconsistent config error
 
                 if dev in olddevices:
                     olddevice = olddevices[dev]
@@ -1109,6 +1218,7 @@ class SyncthingHandler(ServerComponent):
                     newfolder = oldfolder
                 self.__folders[fid] = newfolder
 
+            self.__log(1, 'final folder list:', self.__folders.keys())
             self.__ignoreDevices = set()
             for dev in listdir(os.path.join(configFoldPath, 'ignoredevices')):
                 self.__ignoreDevices.add(dev)
@@ -1143,12 +1253,15 @@ class SyncthingHandler(ServerComponent):
             if self._isServer():  # TODO: update only affected ones !
                 for dev in self.__devices:
                     self.__save_device_configuration(dev)
+        else:
+            self.__log(1, 'state hasn nott changed, no need to resave st config')
 
         # send events
         if olddevices != self.__devices:
             devicesadded = [copy.deepcopy(y) for x, y in self.__devices.items() if x not in olddevices]
             devicesremoved = [copy.deepcopy(y) for x, y in olddevices.items() if x not in self.__devices]
             devicesupdated = [copy.deepcopy(y) for x, y in olddevices.items() if x in self.__devices and y != self.__devices[x]]
+            __debug_devicesupdated = [y for x, y in self.__devices.items() if x in olddevices and y != olddevices[x]]
             if len(devicesadded) > 0:
                 self._enqueueEvent(DevicesAddedEvent(devicesadded, 'reload_configuration'))
                 self.__log(1, 'devicesadded event enqueued %s' % repr(devicesadded))
@@ -1159,7 +1272,7 @@ class SyncthingHandler(ServerComponent):
                 self._enqueueEvent(DevicesChangedEvent(devicesupdated, 'reload_configuration'))
                 self.__log(1, 'devicesupdated event enqueued %s' % repr(devicesupdated))
             #check
-            for dev in devicesupdated:
+            for dev in __debug_devicesupdated:
                 assert dev is __debug_olddevices[dev.id()], 'modified device is not the same object'
         if oldfolders != self.__folders:
             foldersadded = [copy.deepcopy(y) for x, y in self.__folders.items() if x not in olddevices]
@@ -1255,7 +1368,7 @@ class SyncthingHandler(ServerComponent):
         with open(os.path.join(self.config_root, 'syncthinghandler_config.json'), 'w') as f:
             json.dump(config, f, indent=4)
 
-    def __save_configuration(self):
+    def __save_configuration(self, save_st_config=True):
         """
         server saves configuration to shared server folder
         both server and client dumps cache of current config to json file, though  it should only be used as abootstrap
@@ -1312,7 +1425,7 @@ class SyncthingHandler(ServerComponent):
                 for fid in self.__folders:
                     fiddevpath = os.path.join(_fldpath, fid, 'devices')
                     shutil.rmtree(fiddevpath, ignore_errors=True)
-                    os.makedirs(fiddevpath)
+                    os.makedirs(fiddevpath, exist_ok=True)
                     for dev in self.__folders[fid].devices():
                         os.mknod(os.path.join(fiddevpath, dev))
                     with open(os.path.join(_fldpath, fid, 'attribs'), 'w') as f:
@@ -1322,6 +1435,9 @@ class SyncthingHandler(ServerComponent):
                 # save ign dev
                 for dev in self.__ignoreDevices:
                     os.mknod(os.path.join(_ignpath, dev))
+
+            if save_st_config:
+                self.__save_st_config()
         #finally:
         #    if self.syncthing_running():
         #        self.__post('/rest/system/resume', {})
@@ -1331,6 +1447,11 @@ class SyncthingHandler(ServerComponent):
         saves current configuration to syncthing config and restarts syncthing if needed
         :return:
         """
+        if self.__defer_stupdate:
+            self.__log(1, 'st configuration will be updated when methodbatch finishes')
+            self.__defer_stupdate_writerequired = True
+            return
+        self.__log(1, 'saving st configuration')
         conf = ET.Element('configuration', {'version': '28'})
 
         servers = self.__servers
@@ -1341,7 +1462,16 @@ class SyncthingHandler(ServerComponent):
         if self._isServer():
             serverConfigFolder = self.get_config_folder()
             #fid = 'server_configuration-%s' % hashlib.sha1(self.__server_secret.encode('UTF-8')).hexdigest()
-            sconf = ET.SubElement(conf, 'folder', {'id': serverConfigFolder.fid(), 'label': 'server configuration', 'path': serverConfigFolder.path(), 'type': 'sendreceive'})
+            sconf = ET.SubElement(conf, 'folder', {'id': serverConfigFolder.fid(),
+                                                   'label': 'server configuration',
+                                                   'path': serverConfigFolder.path(),
+                                                   'type': 'sendreceive',
+                                                   'rescanIntervalS': '3600',
+                                                   'fsWatcherEnabled': 'true',
+                                                   'fsWatcherDelayS': '5',
+                                                   'ignorePerms': 'true',
+                                                   'autoNormalize': 'true'
+                                                   })
             ET.SubElement(sconf, 'maxConflicts').text = '0'
             for server in self.__servers:
                 ET.SubElement(sconf, 'device', {'id': server})
@@ -1366,7 +1496,7 @@ class SyncthingHandler(ServerComponent):
                                                           'type': 'sendreceive',
                                                           'rescanIntervalS': '3600',
                                                           'fsWatcherEnabled': 'true',
-                                                          'fsWatcherDelayS': '10',
+                                                          'fsWatcherDelayS': '5',
                                                           'ignorePerms': 'true',
                                                           'autoNormalize': 'true'
                                                           })
