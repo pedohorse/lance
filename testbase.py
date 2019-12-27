@@ -40,7 +40,12 @@ class TestBase:
             time.sleep(seconds)
 
         def check(self, assertion, timeout: int, time_to_hold: int = 0, interval: int = 1):
-            self.print('waiting for assertion to be true. timeout %d seconds...' % timeout)
+            if assertion.__doc__ is not None:
+                self.print(assertion.__doc__)
+            if time_to_hold == 0:
+                self.print('waiting for assertion to be true. timeout %d seconds...' % timeout)
+            else:
+                self.print('waiting for assertion to become true and stay that way for %d seconds. timeout %d seconds...' % (time_to_hold, timeout))
             last_ex = None
             hold_start_time = None
             start_time = time.time()
@@ -49,10 +54,10 @@ class TestBase:
                     continue
                 try:
                     assertion()
+                    if hold_start_time is None:
+                        hold_start_time = time.time()
                     if time_to_hold <= 0:
                         break
-                    elif hold_start_time is None:
-                        hold_start_time = time.time()
                     else:
                         if time.time() - hold_start_time > time_to_hold:
                             break
