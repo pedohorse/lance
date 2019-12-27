@@ -55,7 +55,7 @@ class Server(object):
                     if possibleproject is None or possibleproject in self.__server.projectManagers:
                         continue
                     self.__log(1, 'new project discovered! %s' % possibleproject)
-                    newpm = ProjectManager(self.__server, possibleproject, config_sync_status=self.__server.syncthingHandler.config_synced())
+                    newpm = ProjectManager(self.__server, possibleproject)  #, config_sync_status=self.__server.syncthingHandler.config_synced())
                     self.__server.projectManagers[possibleproject] = newpm
                     self.__log(1, 'starting new project manager')
                     newpm.start()
@@ -69,7 +69,7 @@ class Server(object):
                     if possibleproject in self.__server.projectManagers:
                         continue
                     self.__log(1, 'new project discovered! %s' % possibleproject)
-                    newpm = ProjectManager(self.__server, possibleproject, config_sync_status=self.__server.syncthingHandler.config_synced())
+                    newpm = ProjectManager(self.__server, possibleproject)  #, config_sync_status=self.__server.syncthingHandler.config_synced())
                     self.__server.projectManagers[possibleproject] = newpm
                     self.__log(1, 'starting new project manager')
                     newpm.start()
