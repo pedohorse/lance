@@ -112,7 +112,9 @@ class AsyncMethodBatch:
     def __exit__(self, exc_type, exc_val, exc_tb):
         with self.__thread._method_invoke_Queue_lock:
             while self._method_invoke_Queue.qsize() > 0:  # we dont check for Empty expection in crap below only cuz we know WE are the only accessor to this queue due to the extra lock
-                self.__thread._method_invoke_Queue.put(self._method_invoke_Queue.get())
+                cmd = self._method_invoke_Queue.get()
+                cmd[1].set_raise_on_invoke(True)
+                self.__thread._method_invoke_Queue.put(cmd)
         self.__doubleEnterPreventor.release()
 
 
