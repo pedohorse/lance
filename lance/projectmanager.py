@@ -42,7 +42,7 @@ class ShotPart:
         prjmeta = self.__stfolder.metadata()['__ProjectManager_data__']
         self.__project = prjmeta['project']
         self.__shot = prjmeta['shotid']
-        self.__id = prjmeta['shotpart']
+        self.__id = prjmeta['shotpartid']
         self.__fid = self.__stfolder.id()
 
     def stfolder_id(self):
@@ -85,7 +85,7 @@ class ShotPart:
 
     def update_folder(self, stfolder: syncthinghandler.Folder):
         if self.__stfolder is not None and self.__stfolder.id() != stfolder.id():
-            log(2, 'ShotPart::update_folder: new folder id differs from existing one')
+            log(4, 'ShotPart::update_folder: new folder id differs from existing one')
 
         self.__stfolder = stfolder  # Note - this is not a LIVE version of the Folder - just a copy with latest reported changes
         assert '__ProjectManager_data__' in self.__stfolder.metadata() and 'type' in self.__stfolder.metadata()['__ProjectManager_data__'] and self.__stfolder.metadata()['__ProjectManager_data__']['type'] == 'shotpart', 'bad folder metadata'
@@ -192,6 +192,44 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         #             self.__rescanConfiguration(rescan_project_settings=False)
         #         return
         # else:  # main syncthinghandler config is in sync
+
+        # a couple of shortcuts:
+        def event_add_shotpart(folder: syncthinghandler.Folder):
+            if '__ProjectManager_data__' not in folder.metadata():
+                self.__log(4, 'given folder does not have project metadata: %s' % folder.id())
+                return False
+            metadata = folder.metadata()['__ProjectManager_data__']
+            if metadata['project'] != self.__project:
+                self.__log(4, 'given folder %s belongs to project %s' % (folder.id(), metadata['project']))
+                return False
+            if metadata['type'] != 'shotpart':
+                self.__log(4, 'given folder %s is not a shotpart: %s' % (folder.id(), metadata['type']))
+                return False
+            if self.__shots.get(metadata['shotid'], {}).get(metadata['shotpartid'], None) is not None:
+                self.__log(4, 'added folder shotid shotpart already exist! %s %s' % (metadata['shotid'], metadata['shotpartid']))
+                return False
+
+            if metadata['shotid'] not in self.__shots:
+                self.__shots[metadata['shotid']] = {}
+            newshotpart = ShotPart(folder)
+            self.__shots[metadata['shotid']][metadata['shotpartid']] = newshotpart
+            for userid, user in self.__users.items():
+                if (newshotpart.shotid(), newshotpart.id()) in user.available_shotparts():
+                    newshotpart.add_user(userid)
+            return True
+
+        def event_remove_shotpart(shotid: str, shotpartid: str):
+            if shotid not in self.__shots:
+                self.__log(4, 'shotid %s does not exist' % shotid)
+                return False
+            if shotpartid not in self.__shots[shotid]:
+                self.__log(4, 'shotpartid %s does not exist' % shotpartid)
+                return False
+            del self.__shots[shotid][shotpartid]
+            if len(self.__shots[shotid]) == 0:
+                del self.__shots[shotid]
+            return True
+
         if isinstance(event, syncthinghandler.FoldersSyncedEvent):
             for folder in event.folders():
                 if '__ProjectManager_data__' not in folder.metadata():
@@ -200,19 +238,19 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
                 if metadata['project'] != self.__project:
                     continue
 
-                if metadata['type'] == 'shotpart':
+                if metadata['type'] == 'shotpart':  # synced data
                     if metadata['shotid'] not in self.__shots:
                         self.__log(2, "unknown shotid %s" % metadata['shotid'])
                         continue
-                    if folder.id() not in self.__shots[metadata['shotid']]:
-                        self.__log(1, 'FoldersSyncedEvent: shotid part synced is unknown: %s  adding to configuration' % folder.id())
-                        self.__shots[metadata['shotid']][folder.id()] = ShotPart(folder)
+                    if metadata['shotpartid'] not in self.__shots[metadata['shotid']]:
+                        self.__log(1, 'shotid part synced is unknown: %s  adding to configuration' % metadata['shotpartid'])
+                        self.__shots[metadata['shotid']][metadata['shotpartid']] = ShotPart(folder)
 
-                elif metadata['type'] == 'server.configuration':
+                elif metadata['type'] == 'server.configuration':  # configuration changed
                     self.__log(1, 'server.configuration changed, rescanning config')
                     self.__rescanConfiguration(rescan_project_settings=True)
 
-        elif isinstance(event, syncthinghandler.FoldersAddedEvent):  # This folders may be duplicated if rescanConfiguration
+        elif isinstance(event, syncthinghandler.FoldersAddedEvent):
             for folder in event.folders():
                 if '__ProjectManager_data__' not in folder.metadata():
                     continue
@@ -221,40 +259,47 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
                     continue
 
                 if metadata['type'] == 'shotpart':
-                    if self.__shots.get(metadata['shotid'], {}).get(metadata['shotpart'], None) is not None:
-                        self.__log(4, 'added folder shotid shotpart already exist! %s %s' % (metadata['shotid'], metadata['shotpart']))
-                        continue
-
-                    if metadata['shotid'] not in self.__shots:
-                        self.__shots[metadata['shotid']] = {}
-                    newshotpart = ShotPart(folder)
-                    self.__shots[metadata['shotid']][metadata['shotpart']] = newshotpart
-                    for userid, user in self.__users.items():
-                        if (newshotpart.shotid(), newshotpart.id()) in user.available_shotparts():
-                            newshotpart.add_user(userid)
+                    event_add_shotpart(folder)
                     # no need to rescan config
 
-                # if folder.id() in (x.id() for x in self.__shots[metadata['shotid']]):
-                #     self.__log(1, 'addFolderEvent: shotid part is present: %s' % folder.id())
-                #     continue
-                #
-                # self.__shots[metadata['shotid']].add(ShotPart(folder))
         elif isinstance(event, syncthinghandler.FoldersConfigurationChangedEvent):  # this change includes metadata
             for folder in event.folders():
                 if '__ProjectManager_data__' not in folder.metadata():
                     continue
                 metadata = folder.metadata()['__ProjectManager_data__']
-                if metadata['project'] != self.__project:
-                    continue
-                self.__log(5, 'folder config/metadata change is NOT IMPLEMENTED YET')
-                #TODO: implement this
 
-                # for shotpart in self.__shots[metadata['shotid']]:
-                #     if shotpart.id() == folder.id():
-                #         shotpart.update_folder(folder)
-                #         break
-                # else:
-                #     self.__log(3, 'shotpart update received, shotpart does not exist %s' % folder.id())
+                if metadata['type'] != 'shotpart':  # so shotpart changed settings
+                    fid_to_shotpart = {}
+                    for shotid, shotpartdict in self.__shots.items():
+                        for shotpartid, shotpart in shotpartdict.items():
+                            fid_to_shotpart[shotpart.stfolder_id()] = shotpart
+                    if folder.id() in fid_to_shotpart:
+                        shotpart = fid_to_shotpart[folder.id()]
+                        changed_project = metadata['project'] != self.__project
+                        changed_shot = metadata['shotid'] != shotpart.shotid()
+                        changed_shotpart = metadata['shotpartid'] != shotpart.id()
+                        if changed_project or changed_shot or changed_shotpart:
+                            # removing shotpart from the list
+                            del self.__shots[shotpart.shotid()][shotpart.id()]
+                            if len(self.__shots[shotpart.shotid()]) == 0:
+                                del self.__shots[shotpart.shotid()]
+                            # now deciding what to do with it
+                            if changed_project:
+                                self.__log(1, 'folder %s changed project from %s to %s. removing it from our shotlist' % (folder.label(), self.__project, metadata['project']))
+                            else:
+                                if changed_shot:
+                                    self.__log(1, 'folder %s changed shot id from %s to %s.' % (folder.label(), shotpart.shotid(), metadata['shotid']))
+                                else:  # changed_shotpart
+                                    self.__log(1, 'folder %s changed shotpart id from %s to %s.' % (folder.label(), shotpart.shotid(), metadata['shotid']))
+                                event_add_shotpart(folder)
+                    elif metadata['project'] == self.__project:  # means folder already existed to syncthing, but was not known to this ProjectManager
+                        # basically we just do the same as in folder added event
+                        event_add_shotpart(folder)
+
+                else:
+                    self.__log(5, 'folder config/metadata change for folder type %s is NOT IMPLEMENTED YET' % metadata['type'])
+                    #TODO: implement this. more types to come
+
         elif isinstance(event, syncthinghandler.FoldersVolatileDataChangedEvent):  # TODO: treat this event better
             for folder in event.folders():
                 if '__ProjectManager_data__' not in folder.metadata():
@@ -263,17 +308,17 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
                 if metadata['project'] != self.__project:
                     continue
 
-                if metadata['type'] != 'shotpart':
-                    continue
-                if metadata['shotid'] not in self.__shots:
-                    self.__log(2, "unknown shotid %s" % metadata['shotid'])
-                    continue
-                for shotpartid, shotpart in self.__shots[metadata['shotid']].items():
-                    if shotpart.stfolder_id() == folder.id():
-                        shotpart.update_folder(folder)
-                        break
-                else:
-                    self.__log(3, 'shotpart volatile update received, shotpart does not exist %s' % folder.id())
+                if metadata['type'] == 'shotpart':
+                    if metadata['shotid'] not in self.__shots:
+                        self.__log(4, "unknown shotid %s" % metadata['shotid'])
+                        continue
+                    for shotpartid, shotpart in self.__shots[metadata['shotid']].items():
+                        if shotpart.stfolder_id() == folder.id():
+                            shotpart.update_folder(folder)
+                            break
+                    else:
+                        self.__log(3, 'shotpart volatile update received, shotpart does not exist %s' % folder.id())
+
         elif isinstance(event, syncthinghandler.FoldersRemovedEvent):
             for folder in event.folders():
                 if '__ProjectManager_data__' not in folder.metadata():
@@ -282,13 +327,13 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
                 if metadata['project'] != self.__project:
                     continue
                 if metadata['type'] == 'shotpart':
-                    if self.__shots.get(metadata['shotid'], {}).get(metadata['shotpart'], None) is None:
-                        self.__log(4, 'removed folder shotid shotpart does not exist! %s %s' % (metadata['shotid'], metadata['shotpart']))
+                    if self.__shots.get(metadata['shotid'], {}).get(metadata['shotpartid'], None) is None:
+                        self.__log(4, 'removed folder shotid shotpart does not exist! %s %s' % (metadata['shotid'], metadata['shotpartid']))
                         continue
 
                     if metadata['shotid'] not in self.__shots:
                         self.__shots[metadata['shotid']] = {}
-                    del self.__shots[metadata['shotid']][metadata['shotpart']]
+                    del self.__shots[metadata['shotid']][metadata['shotpartid']]
                     if len(self.__shots[metadata['shotid']]) == 0:
                         del self.__shots[metadata['shotid']]
                     # no need to rescan config
@@ -444,7 +489,7 @@ class ProjectManager(ServerComponent, eventprocessor.BaseEventProcessorInterface
         meta['__ProjectManager_data__'] = {'type': 'shotpart',
                                            'project': self.__project,
                                            'shotid': shotid,
-                                           'shotpart': shotpartid}
+                                           'shotpartid': shotpartid}
         fid = "folder-{project}-{shotid}-{shotpartid}-{randstr}".format(project=self.__project, shotid=shotid, shotpartid=shotpartid, randstr=''.join(random.choice(string.ascii_lowercase) for _ in range(16)))
 
         self.__sthandler.add_folder(path, '%s :%s' % (shotname, shotpartid), devList=None, metadata=meta, overrideFid=fid)
