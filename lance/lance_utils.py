@@ -184,7 +184,7 @@ class StoppableThread(threading.Thread):
         pass
 
     class AsyncResult(object):
-        def __init__(self, raise_straightaway=False, retry_exception_types=(), retry_wait_time=10):
+        def __init__(self, raise_straightaway=False, retry_exception_types=(), retry_wait_time=300):
             self.__done = threading.Event()
             self.__result = None
             self.__exception = None
@@ -251,6 +251,11 @@ class StoppableThread(threading.Thread):
         def set_retry_exception_types(self, types):
             self.__retry_exception_types = tuple(types)
             return self
+
+        def add_retry_exception_types(self, types):
+            if not hasattr(types, '__iter__'):
+                types = (types,)
+            self.__retry_exception_types = tuple(set(self.__retry_exception_types).union(set(types)))
 
         def set_retry_timeout(self, timeout):
             self.__retry_wait_time = timeout
